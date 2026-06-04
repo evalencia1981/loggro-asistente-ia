@@ -37,15 +37,23 @@ HOMOLOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "homolog
 _KV_KEY = "homologacion"
 
 
+def _kv_creds() -> tuple[str, str]:
+    """Resuelve URL/token del KV. Acepta los nombres de Vercel KV y de Upstash."""
+    url = os.getenv("KV_REST_API_URL") or os.getenv("UPSTASH_REDIS_REST_URL") or ""
+    token = os.getenv("KV_REST_API_TOKEN") or os.getenv("UPSTASH_REDIS_REST_TOKEN") or ""
+    return url, token
+
+
 def _kv_enabled() -> bool:
-    return bool(os.getenv("KV_REST_API_URL") and os.getenv("KV_REST_API_TOKEN"))
+    url, token = _kv_creds()
+    return bool(url and token)
 
 
 def _kv_cmd(cmd: list) -> Any:
     """Ejecuta un comando Redis vía la API REST de Upstash/Vercel KV."""
-    url = os.getenv("KV_REST_API_URL", "").rstrip("/")
-    token = os.getenv("KV_REST_API_TOKEN", "")
-    r = requests.post(url, headers={"Authorization": f"Bearer {token}"}, json=cmd, timeout=15)
+    url, token = _kv_creds()
+    r = requests.post(url.rstrip("/"), headers={"Authorization": f"Bearer {token}"},
+                      json=cmd, timeout=15)
     r.raise_for_status()
     return r.json().get("result")
 
