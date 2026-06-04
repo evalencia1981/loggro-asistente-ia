@@ -63,7 +63,6 @@ export default function TirillaUpload({ onExtracted }: Props) {
           ref={inputRef}
           type="file"
           accept="image/*"
-          capture="environment"
           className="hidden"
           onChange={(e) => choose(e.target.files?.[0] ?? null)}
         />

@@ -64,7 +64,6 @@ export default function ImagenUpload<R>({ extraer, onResult, etiqueta }: Props<R
           ref={inputRef}
           type="file"
           accept="image/*"
-          capture="environment"
           className="hidden"
           onChange={(e) => choose(e.target.files?.[0] ?? null)}
         />
