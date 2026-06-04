@@ -26,7 +26,28 @@ import re
 import json
 from typing import Any
 
+import requests
+
 HOMOLOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "homologacion.json")
+
+# --------------------------------------------------------------------------- #
+# Backend de almacenamiento: Vercel KV (Upstash Redis) en producción, archivo
+# JSON en local. Si están las variables KV_REST_API_URL/TOKEN, se usa KV.
+# --------------------------------------------------------------------------- #
+_KV_KEY = "homologacion"
+
+
+def _kv_enabled() -> bool:
+    return bool(os.getenv("KV_REST_API_URL") and os.getenv("KV_REST_API_TOKEN"))
+
+
+def _kv_cmd(cmd: list) -> Any:
+    """Ejecuta un comando Redis vía la API REST de Upstash/Vercel KV."""
+    url = os.getenv("KV_REST_API_URL", "").rstrip("/")
+    token = os.getenv("KV_REST_API_TOKEN", "")
+    r = requests.post(url, headers={"Authorization": f"Bearer {token}"}, json=cmd, timeout=15)
+    r.raise_for_status()
+    return r.json().get("result")
 
 # Código consecutivo de facturación al inicio de la descripción (ej. "000474").
 # Cambia entre facturas, así que NO debe afectar la homologación: lo quitamos.
@@ -50,18 +71,10 @@ def _normalizar(desc: str) -> str:
 normalizar = _normalizar
 
 
-def cargar(path: str = HOMOLOG_PATH) -> dict[str, Any]:
-    """Carga el almacén. Migra el formato antiguo (plano {desc: id}) a v2."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        return _empty()
-
+def _migrar(data: Any) -> dict[str, Any]:
+    """Normaliza a v2; migra el formato antiguo plano {desc: id} si hace falta."""
     if isinstance(data, dict) and data.get("version") == 2:
         return data
-
-    # Migración: formato antiguo plano {"DESCRIPCION": "product_id", ...}
     migrado = _empty()
     items = {
         _normalizar(desc): {"product_id": pid, "product_name": None}
@@ -72,7 +85,29 @@ def cargar(path: str = HOMOLOG_PATH) -> dict[str, Any]:
     return migrado
 
 
+def cargar(path: str = HOMOLOG_PATH) -> dict[str, Any]:
+    """Carga el almacén (KV en prod, archivo en local). Migra formato antiguo a v2."""
+    if _kv_enabled():
+        raw = _kv_cmd(["GET", _KV_KEY])
+        if not raw:
+            return _empty()
+        try:
+            return _migrar(json.loads(raw))
+        except (json.JSONDecodeError, TypeError):
+            return _empty()
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return _empty()
+    return _migrar(data)
+
+
 def guardar(data: dict[str, Any], path: str = HOMOLOG_PATH) -> None:
+    if _kv_enabled():
+        _kv_cmd(["SET", _KV_KEY, json.dumps(data, ensure_ascii=False)])
+        return
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
