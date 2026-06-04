@@ -81,6 +81,43 @@ export interface ChatResult {
   respuesta: string;
 }
 
+// ---- Gastos ----
+export interface TipoGasto {
+  id: string;
+  name: string;
+}
+
+export interface Responsable {
+  id: string;
+  name: string;
+}
+
+export interface GastoExtraccion {
+  proveedor: { nombre_tirilla: string; nit: string };
+  documento: { numero: string; fecha: string };
+  concepto: string;
+  forma_pago?: string;
+  subtotal: number;
+  impuestos: number;
+}
+
+export interface GastoExtractResult {
+  gasto: GastoExtraccion;
+  proveedor_sugerido: Provider | null;
+  tipo_sugerido: string | null;
+  responsable_sugerido: string | null;
+}
+
+export interface GastoChatResult extends GastoExtractResult {
+  respuesta: string;
+}
+
+export interface CrearGastoResult {
+  ok: boolean;
+  expense_id: string | null;
+  total: number;
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
@@ -168,4 +205,48 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(args),
     }).then((r) => json<ChatResult>(r)),
+
+  // ---- Gastos ----
+  gastosTipos: () => fetch("/api/gastos/tipos").then((r) => json<TipoGasto[]>(r)),
+
+  gastosResponsables: () =>
+    fetch("/api/gastos/responsables").then((r) => json<Responsable[]>(r)),
+
+  gastosExtraer: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return fetch("/api/gastos/extraer", { method: "POST", body: fd }).then((r) =>
+      json<GastoExtractResult>(r)
+    );
+  },
+
+  gastosChat: (args: { mensaje: string; gasto?: GastoExtraccion | null; historial?: ChatTurn[] }) =>
+    fetch("/api/gastos/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    }).then((r) => json<GastoChatResult>(r)),
+
+  crearGasto: (args: {
+    type_expense_id: string;
+    paid_to_id?: string;
+    provider_id?: string;
+    invoice_number?: string;
+    forma_pago?: string;
+    concepto: string;
+    subtotal: number;
+    impuestos: number;
+    sale_de_caja?: boolean;
+    fecha?: string | null;
+  }) =>
+    fetch("/api/gastos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    }).then((r) => json<CrearGastoResult>(r)),
+
+  eliminarGasto: (expenseId: string) =>
+    fetch(`/api/gastos/${encodeURIComponent(expenseId)}`, { method: "DELETE" }).then((r) =>
+      json<{ ok: boolean; expense_id: string }>(r)
+    ),
 };

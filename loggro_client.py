@@ -162,6 +162,43 @@ class LoggroClient:
         """POST /inventories/payments  (RUTA POR CONFIRMAR: guardarpagoinventario)."""
         return self._post("/inventories/payments", payload)
 
+    # -- gastos --------------------------------------------------------------
+    def get_type_expenses(self) -> list[dict]:
+        """GET /typeExpenses -> tipos de gasto [{_id, name, ...}]."""
+        data = self._get("/typeExpenses")
+        return data.get("data", data) if isinstance(data, dict) else data
+
+    def get_users(self) -> list[dict]:
+        """GET /users -> usuarios/responsables [{_id, name, ...}]."""
+        data = self._get("/users")
+        return data.get("data", data) if isinstance(data, dict) else data
+
+    def get_expenses(self, date_init: str | None = None, date_end: str | None = None) -> list[dict]:
+        """GET /expenses -> gastos del negocio (filtro por rango de fechas)."""
+        data = self._get("/expenses", dateInit=date_init, dateEnd=date_end)
+        return data.get("data", data) if isinstance(data, dict) else data
+
+    def create_expense(self, payload: dict) -> dict:
+        """POST /expenses -> crea/edita un gasto (con '_id' = edición). Requiere caja activa
+        solo si subtractCashRegister=true."""
+        return self._post("/expenses", payload)
+
+    def delete_expense(self, expense_id: str) -> dict:
+        """DELETE /expenses/{_id} -> marca el gasto como eliminado (soft delete)."""
+        return self._delete(f"/expenses/{expense_id}")
+
+    def get_active_cashbox(self) -> dict | None:
+        """GET /cashboxes -> la caja abierta (isClosed=False) más reciente, o None.
+
+        Solo se necesita para gastos que 'salen de caja' (subtractCashRegister=True).
+        """
+        data = self._get("/cashboxes")
+        boxes = data.get("data", data) if isinstance(data, dict) else data
+        abiertas = [b for b in boxes if not b.get("isClosed") and not b.get("deleted")]
+        if not abiertas:
+            return None
+        return max(abiertas, key=lambda b: b.get("seq", 0))
+
 
 # --------------------------------------------------------------------------- #
 # Homologación

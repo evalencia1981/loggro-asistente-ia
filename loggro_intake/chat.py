@@ -50,28 +50,38 @@ def _factura_vacia() -> dict[str, Any]:
     }
 
 
-def conversar(mensaje: str, factura: Optional[dict] = None,
-              historial: Optional[list[dict]] = None) -> dict:
-    """Procesa un turno del chat.
+def conversar_doc(mensaje: str, doc_schema: dict, system_prompt: str,
+                  estado: Optional[dict] = None, historial: Optional[list[dict]] = None,
+                  etiqueta_doc: str = "DOCUMENTO") -> dict:
+    """Genérico: un turno de chat que construye/actualiza un documento que cumple `doc_schema`.
 
-    mensaje: texto del usuario (escrito o dictado).
-    factura: estado actual de la factura (o None para empezar de cero).
-    historial: lista opcional [{"role": "user"|"assistant", "content": str}] para contexto.
-
-    Devuelve {"factura": <dict actualizado>, "respuesta": <str>}.
+    Devuelve {"data": <dict del documento>, "respuesta": <str>}. Reutilizable para
+    factura, gasto, etc. pasando el esquema y el system prompt adecuados.
     """
-    estado = factura or _factura_vacia()
-
+    wrap_schema = {
+        "type": "object",
+        "properties": {"data": doc_schema, "respuesta": {"type": "string"}},
+        "required": ["data", "respuesta"],
+    }
     lineas_hist = ""
     if historial:
         lineas_hist = "\n".join(
             f"{h.get('role', 'user')}: {h.get('content', '')}" for h in historial[-8:]
         )
-
     prompt = (
-        f"{SYSTEM}\n\n"
-        f"ESTADO ACTUAL DE LA FACTURA (JSON):\n{json.dumps(estado, ensure_ascii=False)}\n\n"
+        f"{system_prompt}\n\n"
+        f"ESTADO ACTUAL DEL {etiqueta_doc} (JSON):\n{json.dumps(estado or {}, ensure_ascii=False)}\n\n"
         + (f"CONVERSACIÓN PREVIA:\n{lineas_hist}\n\n" if lineas_hist else "")
         + f"MENSAJE NUEVO DEL USUARIO:\n{mensaje}"
     )
-    return generar_json([{"text": prompt}], CHAT_SCHEMA)
+    return generar_json([{"text": prompt}], wrap_schema)
+
+
+def conversar(mensaje: str, factura: Optional[dict] = None,
+              historial: Optional[list[dict]] = None) -> dict:
+    """Factura (preset): un turno de chat. Devuelve {"factura": ..., "respuesta": ...}."""
+    out = conversar_doc(
+        mensaje, FACTURA_SCHEMA, SYSTEM,
+        estado=factura or _factura_vacia(), historial=historial, etiqueta_doc="FACTURA",
+    )
+    return {"factura": out.get("data") or _factura_vacia(), "respuesta": out.get("respuesta", "")}

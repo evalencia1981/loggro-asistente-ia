@@ -23,11 +23,20 @@ Extrae los datos de la imagen al esquema JSON indicado. Reglas:
 Devuelve solo el JSON del esquema."""
 
 
-def extraer_tirilla(image_bytes: bytes, media_type: str = "image/jpeg") -> dict:
-    """Llama a Gemini con la imagen y devuelve el dict de la factura (sección 4.1)."""
+def extraer_imagen(image_bytes: bytes, schema: dict, prompt: str,
+                   media_type: str = "image/jpeg") -> dict:
+    """Genérico: extrae de una imagen los datos que cumplan `schema`, guiado por `prompt`.
+
+    Reutilizable para cualquier tipo de documento (factura, gasto, etc.).
+    """
     b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
     parts = [
         {"inline_data": {"mime_type": media_type, "data": b64}},
-        {"text": PROMPT},
+        {"text": prompt},
     ]
-    return generar_json(parts, FACTURA_SCHEMA)
+    return generar_json(parts, schema)
+
+
+def extraer_tirilla(image_bytes: bytes, media_type: str = "image/jpeg") -> dict:
+    """Factura/tirilla: extrae el dict de la sección 4.1 (preset de factura)."""
+    return extraer_imagen(image_bytes, FACTURA_SCHEMA, PROMPT, media_type)

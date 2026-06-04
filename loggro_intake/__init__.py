@@ -14,13 +14,21 @@ GEMINI_API_KEY en el entorno. Modelo configurable con LOGGRO_EXTRACTOR_MODEL.
 Diseñado para reutilizarse en otros proyectos: no depende de FastAPI ni del front.
 """
 from .schema import FACTURA_SCHEMA, media_type_from_name
-from .extractor import extraer_tirilla
-from .chat import conversar, CHAT_SCHEMA
+from .extractor import extraer_tirilla, extraer_imagen
+from .chat import conversar, conversar_doc, CHAT_SCHEMA
+from . import gasto
+from .gasto import GASTO_SCHEMA, extraer_gasto, conversar_gasto
 
 __all__ = [
     "FACTURA_SCHEMA",
+    "GASTO_SCHEMA",
     "CHAT_SCHEMA",
     "media_type_from_name",
+    "extraer_imagen",
     "extraer_tirilla",
     "conversar",
+    "conversar_doc",
+    "gasto",
+    "extraer_gasto",
+    "conversar_gasto",
 ]
