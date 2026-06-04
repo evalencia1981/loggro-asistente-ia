@@ -18,10 +18,13 @@ try:
 except ImportError:
     pass
 
-url = os.getenv("KV_REST_API_URL", "").rstrip("/")
-token = os.getenv("KV_REST_API_TOKEN", "")
+url = (os.getenv("KV_REST_API_URL") or os.getenv("UPSTASH_REDIS_REST_URL") or "").rstrip("/")
+token = os.getenv("KV_REST_API_TOKEN") or os.getenv("UPSTASH_REDIS_REST_TOKEN") or ""
 if not url or not token:
-    raise SystemExit("Falta KV_REST_API_URL / KV_REST_API_TOKEN en el entorno.")
+    raise SystemExit(
+        "Falta el KV en el entorno. Define KV_REST_API_URL/KV_REST_API_TOKEN "
+        "o UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN."
+    )
 
 with open("homologacion.json", encoding="utf-8") as f:
     data = json.load(f)
