@@ -1,0 +1,113 @@
+{
+  "version": 2,
+  "providers": {
+    "nit:1039473492": {
+      "name": "ESTANQUILLO Y CIGARRERIA DONDE EL CALVO",
+      "items": {
+        "POKER 330ML": {
+          "product_id": "67c3a250ad3161833cb217c3",
+          "product_name": "Poker"
+        },
+        "AGUILA 330ML": {
+          "product_id": "67c3a2150a1f43ca347c55a9",
+          "product_name": "Aguila Original"
+        },
+        "STELLA ARTOIS 6PACK": {
+          "product_id": "67c3ca1a23f00639bf4191a1",
+          "product_name": "Stella Artois",
+          "factor": 6.0
+        },
+        "HEINEKEN 330ML": {
+          "product_id": "67c398dabe2bbaa69edebe27",
+          "product_name": "Heineken"
+        },
+        "PILSEN 330ML": {
+          "product_id": "67c3bf9f0a1f43ca34f19f97",
+          "product_name": "Pilsen"
+        },
+        "RON CALD TRAD MEDIA WSD": {
+          "product_id": "67c3dd5123f00639bf720b2c",
+          "product_name": "Media ron Caldas 3 años"
+        },
+        "AGUARD AZUL": {
+          "product_id": "67c3aafb0a1f43ca349e3b80",
+          "product_name": "Botella Aguardiente azul"
+        },
+        "RON CALD TRAD MEDIA": {
+          "product_id": "67c3dd5123f00639bf720b2c",
+          "product_name": "Media ron Caldas 3 años"
+        },
+        "POKER": {
+          "product_id": "67c3a250ad3161833cb217c3",
+          "product_name": "Poker"
+        },
+        "PILSEN": {
+          "product_id": "67c3bf9f0a1f43ca34f19f97",
+          "product_name": "Pilsen"
+        },
+        "CALDAS MEDIA 3 AÑOS": {
+          "product_id": "67c3dd5123f00639bf720b2c",
+          "product_name": "Media ron Caldas 3 años"
+        },
+        "BOTELLA AGUARDIENTE": {
+          "product_id": "67c3aafb0a1f43ca349e3b80",
+          "product_name": "Botella Aguardiente azul"
+        },
+        "CLUB COLOMBIA": {
+          "product_id": "67c3a4a9aff1f12499e06fa5",
+          "product_name": "Club Dorada"
+        },
+        "COSTEÑITA 175ML": {
+          "product_id": "67c3a52b858e14116840c538",
+          "product_name": "Costeñita"
+        },
+        "CANADA DRY 300ML": {
+          "product_id": "67c78d284d3498f60346fb3e",
+          "product_name": "Canada Dry"
+        },
+        "RON CALD TRAD": {
+          "product_id": "67c3fe3eabd837caab3d7304",
+          "product_name": "Botella ron Caldas 3 años"
+        },
+        "RON CALD TRAD LIT VID": {
+          "product_id": "67c3fe3eabd837caab3d7304",
+          "product_name": "Botella ron Caldas 3 años"
+        },
+        "AGUARD ROJO MEDIA": {
+          "product_id": "67c3a96b858e14116852c8b7",
+          "product_name": "Media Aguardiente Roja"
+        },
+        "AGUARD VERDE": {
+          "product_id": "67c3a94d0a1f43ca34946443",
+          "product_name": "Media Aguardiente Verde"
+        },
+        "CORONA CERO 330ML": {
+          "product_id": "69b62b1216dfebefc8999a45",
+          "product_name": "Corona sin alcohol"
+        },
+        "STELLA ARTOIS 330ML": {
+          "product_id": "67c3ca1a23f00639bf4191a1",
+          "product_name": "Stella Artois"
+        },
+        "AMARILLO DE": {
+          "product_id": "68576b264bb2e3d6237600ea",
+          "product_name": "BOTELLA AGUARDIENT MANZANARES"
+        },
+        "SMIRNOFF ICE 275ML": {
+          "product_id": "67ce59ce925c7981be5439ec",
+          "product_name": "Smirnoff Rojo"
+        },
+        "CORONA CERO 6PACK": {
+          "product_id": "69b62b1216dfebefc8999a45",
+          "product_name": "Corona sin alcohol",
+          "factor": 6.0
+        },
+        "CORONA 6PACK 355ML": {
+          "product_id": "67c762f369c9c17c12d65a45",
+          "product_name": "corona",
+          "factor": 6.0
+        }
+      }
+    }
+  }
+}

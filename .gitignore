@@ -1,0 +1,31 @@
+# Credenciales — NUNCA subir
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Archivos generados por los scripts (volcados de la API)
+productos_loggro.json
+
+# Backups locales
+backup_*/
+
+# Frontend (Node)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Backend
+backend/__pycache__/
+
+# Generados en runtime / local
+tunnel-url.txt
+homologacion.backup.json
+.claude/
+*.tmp
+
+# TypeScript build info
+*.tsbuildinfo
