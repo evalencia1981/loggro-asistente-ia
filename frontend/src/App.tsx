@@ -12,6 +12,7 @@ import {
 import ProductPicker from "./components/ProductPicker";
 import TirillaUpload from "./components/TirillaUpload";
 import ChatFactura from "./components/ChatFactura";
+import GastosView from "./components/GastosView";
 
 const cop = new Intl.NumberFormat("es-CO", {
   style: "currency",
@@ -78,6 +79,7 @@ export default function App() {
   const [deleted, setDeleted] = useState(false);
   const [inputMode, setInputMode] = useState<"foto" | "chat">("foto");
   const [factores, setFactores] = useState<Record<string, number>>({});
+  const [vista, setVista] = useState<"compras" | "gastos">("compras");
 
   useEffect(() => {
     api
@@ -306,6 +308,29 @@ export default function App() {
 
       <div className="mt-8 hairline h-px w-full" />
 
+      {/* ---------- Navegación Compras / Gastos ---------- */}
+      <div className="mt-6 flex justify-center">
+        <div className="inline-flex rounded-xl border border-espresso-600 bg-espresso-950/50 p-1 text-sm">
+          {(["compras", "gastos"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setVista(v)}
+              className={`rounded-lg px-5 py-1.5 font-semibold capitalize transition ${
+                vista === v ? "bg-amber text-espresso-950" : "text-sand-400 hover:text-amber"
+              }`}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {vista === "gastos" ? (
+        <div className="mt-8">
+          <GastosView />
+        </div>
+      ) : (
+      <>
       {/* ---------- Workspace ---------- */}
       <div className="mt-8 grid gap-6 lg:grid-cols-12">
         {/* Config */}
@@ -673,6 +698,8 @@ export default function App() {
           )}
         </section>
       </div>
+      </>
+      )}
 
       <footer className="mt-12 text-center font-mono text-[11px] uppercase tracking-[0.3em] text-sand-500/60">
         Loggro · Restobar · api.pirpos.com

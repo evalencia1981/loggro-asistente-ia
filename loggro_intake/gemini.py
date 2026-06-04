@@ -15,6 +15,9 @@ import time
 import requests
 
 DEFAULT_MODEL = "gemini-2.5-flash"
+# Modelos de respaldo: si el principal se queda sin cuota diaria (429), se usa el
+# siguiente. El free tier tiene límite por modelo, así que esto da resiliencia.
+FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-flash-lite-latest"]
 _URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
@@ -44,20 +47,41 @@ def generar_json(parts: list[dict], schema: dict, model: str | None = None,
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    url = _URL.format(model=model or model_name())
+    # Lista de modelos a intentar: el principal y los de respaldo (sin repetir).
+    primary = model or model_name()
+    modelos = [primary] + [m for m in FALLBACK_MODELS if m != primary]
 
     resp = None
-    for intento in range(4):
-        resp = requests.post(url, params={"key": api_key}, json=body, timeout=120)
-        if resp.ok:
+    hubo_429 = False
+    for m in modelos:
+        url = _URL.format(model=m)
+        agotado = False
+        for intento in range(3):
+            resp = requests.post(url, params={"key": api_key}, json=body, timeout=120)
+            if resp.ok:
+                break
+            if resp.status_code == 429:
+                # Cuota agotada para este modelo -> no esperar, pasar al siguiente.
+                hubo_429 = True
+                agotado = True
+                break
+            if resp.status_code in (500, 502, 503, 504) and intento < 2:
+                time.sleep(2 * (intento + 1))  # 2s, 4s (saturación transitoria)
+                continue
+            raise RuntimeError(f"Gemini {resp.status_code}: {resp.text[:300]}")
+        if resp is not None and resp.ok:
             break
-        if resp.status_code in (429, 500, 502, 503, 504) and intento < 3:
-            time.sleep(2 * (intento + 1))  # 2s, 4s, 6s
-            continue
-        raise RuntimeError(f"Gemini {resp.status_code}: {resp.text[:300]}")
+        if not agotado:
+            break  # error no recuperable que no es 429
     if resp is None or not resp.ok:
+        if hubo_429:
+            raise RuntimeError(
+                "Límite gratuito de Gemini alcanzado en todos los modelos disponibles. "
+                "Reintenta más tarde (la cuota diaria se renueva), usa otra API key, "
+                "o activa facturación en Google AI Studio."
+            )
         raise RuntimeError(
-            f"Gemini sigue saturado tras varios reintentos: {getattr(resp, 'status_code', '?')}"
+            f"Gemini no disponible: {getattr(resp, 'status_code', '?')}"
         )
 
     data = resp.json()

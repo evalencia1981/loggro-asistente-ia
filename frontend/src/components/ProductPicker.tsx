@@ -27,7 +27,8 @@ export default function ProductPicker({ onPick, autoFocus, placeholder }: Props)
   const [active, setActive] = useState(0);
   const [coords, setCoords] = useState<Coords | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
+  // any: el mismo ref se usa en un <ul> y en un <div> (portal). Solo para contains().
+  const listRef = useRef<any>(null);
 
   useEffect(() => {
     if (!q.trim()) {
@@ -150,7 +151,7 @@ export default function ProductPicker({ onPick, autoFocus, placeholder }: Props)
         coords &&
         createPortal(
           <ul
-            ref={listRef as React.RefObject<HTMLUListElement>}
+            ref={listRef}
             style={panelStyle}
             className="fixed z-[100] overflow-auto rounded-xl border border-espresso-600 bg-espresso-850 py-1 shadow-panel animate-fade"
           >

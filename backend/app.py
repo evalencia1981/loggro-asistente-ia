@@ -46,6 +46,8 @@ CACHE_TTL = 600  # segundos (10 min)
 _cache: dict[str, Any] = {
     "products": None, "providers": None,
     "products_ts": 0.0, "providers_ts": 0.0,
+    "tipos_gasto": None, "responsables": None,
+    "tipos_gasto_ts": 0.0, "responsables_ts": 0.0,
 }
 
 
@@ -131,6 +133,28 @@ def cargar_proveedores(refresh: bool = False) -> list[dict]:
         ]
         _cache["providers_ts"] = time.time()
     return _cache["providers"]
+
+
+def cargar_tipos_gasto(refresh: bool = False) -> list[dict]:
+    if _cache["tipos_gasto"] is None or refresh or _expirado(_cache["tipos_gasto_ts"]):
+        tipos = cliente().get_type_expenses()
+        _cache["tipos_gasto"] = [
+            {"id": t.get("_id"), "name": t.get("name") or ""} for t in tipos
+        ]
+        _cache["tipos_gasto_ts"] = time.time()
+    return _cache["tipos_gasto"]
+
+
+def cargar_responsables(refresh: bool = False) -> list[dict]:
+    if _cache["responsables"] is None or refresh or _expirado(_cache["responsables_ts"]):
+        users = cliente().get_users()
+        _cache["responsables"] = [
+            {"id": u.get("_id"),
+             "name": (f"{u.get('name', '')} {u.get('lastName', '')}").strip() or "—"}
+            for u in users
+        ]
+        _cache["responsables_ts"] = time.time()
+    return _cache["responsables"]
 
 
 def cache_status() -> dict:
@@ -294,6 +318,40 @@ def _solo_digitos(s: str) -> str:
     return "".join(c for c in (s or "") if c.isdigit())
 
 
+def _match_catalogo(texto: str, items: list[dict]) -> Optional[str]:
+    """Cruza un texto dictado (ej. 'arriendo', 'Edward Valencia') con un catálogo
+    [{id, name}] y devuelve el id del mejor match, o None."""
+    t = _sin_acentos(texto)
+    if not t:
+        return None
+    nombres = [(it.get("id"), _sin_acentos(it.get("name") or "")) for it in items]
+    for cid, n in nombres:          # match exacto
+        if n and n == t:
+            return cid
+    for cid, n in nombres:          # uno contiene al otro
+        if n and (t in n or n in t):
+            return cid
+    tokens = [w for w in t.split() if len(w) > 2]
+    for cid, n in nombres:          # solape de palabras significativas
+        ntoks = n.split()
+        if any(w in ntoks for w in tokens):
+            return cid
+    return None
+
+
+def _sugerir_catalogos_gasto(g: dict) -> tuple[Optional[str], Optional[str]]:
+    """Devuelve (tipo_gasto_id, responsable_id) sugeridos a partir del texto del gasto."""
+    try:
+        tipo = _match_catalogo(g.get("tipo_gasto", ""), cargar_tipos_gasto())
+    except Exception:
+        tipo = None
+    try:
+        resp = _match_catalogo(g.get("responsable", ""), cargar_responsables())
+    except Exception:
+        resp = None
+    return tipo, resp
+
+
 def _sugerir_proveedor(extraccion: dict) -> Optional[dict]:
     """Busca un proveedor existente cuyo NIT coincida con el de la factura.
 
@@ -354,6 +412,26 @@ class ChatRequest(BaseModel):
     mensaje: str
     factura: Optional[dict] = None      # estado actual de la factura
     historial: list[ChatTurn] = []      # contexto opcional
+
+
+class GastoChatRequest(BaseModel):
+    mensaje: str
+    gasto: Optional[dict] = None
+    historial: list[ChatTurn] = []
+
+
+class CrearGastoRequest(BaseModel):
+    type_expense_id: str                # tipo de gasto (obligatorio)
+    paid_to_id: Optional[str] = None    # responsable
+    provider_id: Optional[str] = None
+    invoice_number: str = ""
+    forma_pago: str = ""
+    concepto: str                       # description (obligatorio)
+    notas: str = ""
+    subtotal: float = 0
+    impuestos: float = 0
+    sale_de_caja: bool = False          # subtractCashRegister
+    fecha: Optional[str] = None
 
 
 @app.post("/api/chat")
@@ -471,3 +549,126 @@ def eliminar_movimiento(movement_id: str):
     except Exception as e:
         raise HTTPException(502, f"Error eliminando el movimiento en Loggro: {e}")
     return {"ok": True, "movement_id": movement_id, "raw": resp}
+
+
+# --------------------------------------------------------------------------- #
+# Módulo de GASTOS (POST/GET/DELETE /expenses) — reutiliza foto + chat
+# --------------------------------------------------------------------------- #
+@app.get("/api/gastos/tipos")
+def gastos_tipos(refresh: bool = Query(False)):
+    """Catálogo de tipos de gasto (dropdown 'Tipo de gasto')."""
+    try:
+        return cargar_tipos_gasto(refresh)
+    except Exception as e:
+        raise HTTPException(502, f"Error consultando tipos de gasto: {e}")
+
+
+@app.get("/api/gastos/responsables")
+def gastos_responsables(refresh: bool = Query(False)):
+    """Catálogo de responsables/usuarios (dropdown 'Responsable')."""
+    try:
+        return cargar_responsables(refresh)
+    except Exception as e:
+        raise HTTPException(502, f"Error consultando responsables: {e}")
+
+
+@app.post("/api/gastos/extraer")
+async def gastos_extraer(file: UploadFile = File(...)):
+    """Foto de un recibo de gasto -> datos del gasto + proveedor sugerido por NIT."""
+    if not os.getenv("GEMINI_API_KEY"):
+        raise HTTPException(400, "Falta GEMINI_API_KEY en el .env para extraer con IA.")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Archivo vacío.")
+    media = loggro_intake.media_type_from_name(file.filename or "gasto.jpg")
+    try:
+        g = loggro_intake.extraer_gasto(data, media)
+    except Exception as e:
+        raise HTTPException(502, f"Error extrayendo el gasto: {e}")
+    tipo_id, resp_id = _sugerir_catalogos_gasto(g)
+    return {
+        "gasto": g,
+        "proveedor_sugerido": _sugerir_proveedor(g),
+        "tipo_sugerido": tipo_id,
+        "responsable_sugerido": resp_id,
+    }
+
+
+@app.post("/api/gastos/chat")
+def gastos_chat(req: GastoChatRequest):
+    """Turno de chat (texto/voz) para armar un gasto."""
+    if not os.getenv("GEMINI_API_KEY"):
+        raise HTTPException(400, "Falta GEMINI_API_KEY en el .env para el chat con IA.")
+    if not (req.mensaje or "").strip():
+        raise HTTPException(400, "Mensaje vacío.")
+    try:
+        out = loggro_intake.conversar_gasto(
+            req.mensaje, gasto=req.gasto,
+            historial=[t.model_dump() for t in req.historial],
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Error en el chat con IA: {e}")
+    g = out.get("gasto") or {}
+    tipo_id, resp_id = _sugerir_catalogos_gasto(g)
+    return {
+        "gasto": g,
+        "proveedor_sugerido": _sugerir_proveedor(g),
+        "tipo_sugerido": tipo_id,
+        "responsable_sugerido": resp_id,
+        "respuesta": out.get("respuesta", ""),
+    }
+
+
+@app.post("/api/gastos")
+def crear_gasto(req: CrearGastoRequest):
+    """Registra el gasto en Loggro (POST /expenses)."""
+    if not (req.concepto or "").strip():
+        raise HTTPException(400, "El concepto del gasto es obligatorio.")
+    if not req.type_expense_id:
+        raise HTTPException(400, "El tipo de gasto es obligatorio.")
+
+    body: dict[str, Any] = {
+        "typeExpense": req.type_expense_id,
+        "description": req.concepto.strip(),
+        "invoiceNumber": req.invoice_number or "",
+        "paymentMethod": req.forma_pago or "",
+        "notes": req.notas or "",
+        "subTotal": req.subtotal or 0,
+        "taxes": req.impuestos or 0,
+        "subtractCashRegister": bool(req.sale_de_caja),
+        "date": f"{_fecha_iso(req.fecha)}T00:00:00.000Z",
+    }
+    if req.paid_to_id:
+        body["paidTo"] = req.paid_to_id
+    if req.provider_id:
+        body["provider"] = req.provider_id
+    if req.sale_de_caja:
+        box = cliente().get_active_cashbox()
+        if not box:
+            raise HTTPException(400, "No hay caja abierta; no se puede marcar 'Sale de caja'.")
+        body["cashBox"] = box.get("_id")
+
+    try:
+        resp = cliente().create_expense(body)
+    except Exception as e:
+        import json as _json
+        print("[crear_gasto] FALLO. Payload:")
+        print(_json.dumps(body, ensure_ascii=False, indent=2))
+        print("[crear_gasto] Error Loggro:", e)
+        raise HTTPException(502, f"Error creando el gasto en Loggro: {e}")
+
+    return {
+        "ok": True,
+        "expense_id": resp.get("_id") if isinstance(resp, dict) else None,
+        "total": (req.subtotal or 0) + (req.impuestos or 0),
+    }
+
+
+@app.delete("/api/gastos/{expense_id}")
+def eliminar_gasto(expense_id: str):
+    """Elimina (soft delete) un gasto: DELETE /expenses/{_id}."""
+    try:
+        cliente().delete_expense(expense_id)
+    except Exception as e:
+        raise HTTPException(502, f"Error eliminando el gasto en Loggro: {e}")
+    return {"ok": True, "expense_id": expense_id}
