@@ -106,6 +106,11 @@
           "product_id": "67c762f369c9c17c12d65a45",
           "product_name": "corona",
           "factor": 6.0
+        },
+        "RON BACARDI CART": {
+          "product_id": "67fb68a05a701f41b247da96",
+          "product_name": "Trago de Bacardí",
+          "factor": 1.0
         }
       }
     }

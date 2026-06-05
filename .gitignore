@@ -26,6 +26,7 @@ tunnel-url.txt
 homologacion.backup.json
 .claude/
 *.tmp
+*.log
 
 # TypeScript build info
 *.tsbuildinfo

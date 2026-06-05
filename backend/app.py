@@ -280,15 +280,21 @@ def assign(req: AssignRequest):
         match = next((p for p in prods if p["id"] == req.product_id), None)
         name = match["name"] if match else None
     key = _homolog_key(req.provider_id)
-    store.asignar(key, req.provider_name or "", req.descripcion,
-                  req.product_id, name, factor=req.factor or 1)
+    try:
+        store.asignar(key, req.provider_name or "", req.descripcion,
+                      req.product_id, name, factor=req.factor or 1)
+    except Exception as e:
+        raise HTTPException(502, f"No se pudo guardar la homologación: {e}")
     return {"ok": True, "descripcion": req.descripcion,
             "product_id": req.product_id, "product_name": name, "factor": req.factor or 1}
 
 
 @app.post("/api/homologacion/unassign")
 def unassign(req: UnassignRequest):
-    store.eliminar(_homolog_key(req.provider_id), req.descripcion)
+    try:
+        store.eliminar(_homolog_key(req.provider_id), req.descripcion)
+    except Exception as e:
+        raise HTTPException(502, f"No se pudo eliminar la homologación: {e}")
     return {"ok": True}
 
 

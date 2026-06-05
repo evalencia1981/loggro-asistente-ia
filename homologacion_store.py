@@ -31,20 +31,41 @@ import requests
 HOMOLOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "homologacion.json")
 
 # --------------------------------------------------------------------------- #
-# Backend de almacenamiento: Vercel KV (Upstash Redis) en producción, archivo
-# JSON en local. Si están las variables KV_REST_API_URL/TOKEN, se usa KV.
+# Backend de almacenamiento (en orden de preferencia):
+#   1. Redis por cadena de conexión  -> REDIS_URL / KV_URL (rediss://...). Es lo
+#      que expone la integración Redis de Vercel/Upstash.
+#   2. KV REST (Upstash/Vercel KV)   -> KV_REST_API_URL/TOKEN o UPSTASH_*.
+#   3. Archivo JSON local            -> solo en desarrollo (FS escribible).
 # --------------------------------------------------------------------------- #
 _KV_KEY = "homologacion"
 
 
+# ---- 1. Redis por cadena de conexión (REDIS_URL) ---- #
+def _redis_url() -> str:
+    return os.getenv("REDIS_URL") or os.getenv("KV_URL") or ""
+
+
+_redis_client = None
+
+
+def _redis():
+    """Cliente Redis (cacheado por instancia). Import diferido: solo si hay REDIS_URL."""
+    global _redis_client
+    if _redis_client is None:
+        import redis  # type: ignore
+        _redis_client = redis.from_url(_redis_url(), decode_responses=True)
+    return _redis_client
+
+
+# ---- 2. KV REST (Upstash/Vercel KV) ---- #
 def _kv_creds() -> tuple[str, str]:
-    """Resuelve URL/token del KV. Acepta los nombres de Vercel KV y de Upstash."""
+    """Resuelve URL/token del KV REST. Acepta los nombres de Vercel KV y de Upstash."""
     url = os.getenv("KV_REST_API_URL") or os.getenv("UPSTASH_REDIS_REST_URL") or ""
     token = os.getenv("KV_REST_API_TOKEN") or os.getenv("UPSTASH_REDIS_REST_TOKEN") or ""
     return url, token
 
 
-def _kv_enabled() -> bool:
+def _kv_rest_enabled() -> bool:
     url, token = _kv_creds()
     return bool(url and token)
 
@@ -94,30 +115,46 @@ def _migrar(data: Any) -> dict[str, Any]:
 
 
 def cargar(path: str = HOMOLOG_PATH) -> dict[str, Any]:
-    """Carga el almacén (KV en prod, archivo en local). Migra formato antiguo a v2."""
-    if _kv_enabled():
+    """Carga el almacén (Redis/KV en prod, archivo en local). Migra formato antiguo a v2."""
+    raw = None
+    if _redis_url():
+        raw = _redis().get(_KV_KEY)
+    elif _kv_rest_enabled():
         raw = _kv_cmd(["GET", _KV_KEY])
-        if not raw:
-            return _empty()
+    else:
         try:
-            return _migrar(json.loads(raw))
-        except (json.JSONDecodeError, TypeError):
+            with open(path, encoding="utf-8") as f:
+                return _migrar(json.load(f))
+        except FileNotFoundError:
             return _empty()
 
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
+    if not raw:
         return _empty()
-    return _migrar(data)
+    try:
+        return _migrar(json.loads(raw))
+    except (json.JSONDecodeError, TypeError):
+        return _empty()
 
 
 def guardar(data: dict[str, Any], path: str = HOMOLOG_PATH) -> None:
-    if _kv_enabled():
-        _kv_cmd(["SET", _KV_KEY, json.dumps(data, ensure_ascii=False)])
+    payload = json.dumps(data, ensure_ascii=False)
+    if _redis_url():
+        _redis().set(_KV_KEY, payload)
         return
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    if _kv_rest_enabled():
+        _kv_cmd(["SET", _KV_KEY, payload])
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        # En Vercel el filesystem es de solo lectura: sin Redis/KV no hay dónde persistir.
+        # Mensaje explícito para no fallar en silencio (antes el tap "no seleccionaba").
+        raise RuntimeError(
+            "No se pudo guardar la homologación: el almacenamiento no es escribible "
+            "y no hay Redis/KV configurado. Define REDIS_URL (o KV_REST_API_URL/"
+            f"KV_REST_API_TOKEN) en el entorno. Detalle: {e}"
+        ) from e
 
 
 def resolver(provider_id: str, descripcion: str, data: dict[str, Any] | None = None) -> str | None:

@@ -166,14 +166,21 @@ export default function App() {
 
   const asignar = async (descripcion: string, p: Product, factor = 1) => {
     if (!result) return;
-    await api.assign({
-      provider_id: result.provider_id,
-      provider_name: provider?.name,
-      descripcion,
-      product_id: p.id,
-      product_name: p.name,
-      factor,
-    });
+    setError(null);
+    try {
+      await api.assign({
+        provider_id: result.provider_id,
+        provider_name: provider?.name,
+        descripcion,
+        product_id: p.id,
+        product_name: p.name,
+        factor,
+      });
+    } catch (e) {
+      // Sin esto el fallo era silencioso: el tap "no seleccionaba" nada.
+      setError(`No se pudo guardar la homologación: ${String(e)}`);
+      return;
+    }
     setResult((prev) => {
       if (!prev) return prev;
       const items = prev.items.map((it) =>
