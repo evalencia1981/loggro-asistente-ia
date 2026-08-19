@@ -24,9 +24,14 @@ backend/__pycache__/
 # Generados en runtime / local
 tunnel-url.txt
 homologacion.backup.json
+catalogo.json
 .claude/
 *.tmp
 *.log
 
 # TypeScript build info
 *.tsbuildinfo
+
+# Informes generados (contienen datos de clientes: nombres, cedulas, deudas)
+informe_creditos.csv
+informe_creditos.html
