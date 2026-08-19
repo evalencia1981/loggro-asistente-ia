@@ -7,7 +7,8 @@ homologacion_store.py (almacén por proveedor + descripción).
 Cachea productos y proveedores en memoria para no golpear la API de Loggro en
 cada request. Se refresca bajo demanda (?refresh=true) o con POST /api/cache/refresh.
 
-Correr:  uvicorn backend.app:app --reload --port 8000   (desde la raíz del proyecto)
+Correr:  uvicorn backend.app:app --reload --port 8090   (desde la raíz del proyecto)
+         El puerto sale de ports.json; ver docs/PUERTOS.md.
 """
 from __future__ import annotations
 
@@ -25,22 +26,46 @@ from pydantic import BaseModel
 # Importar módulos del proyecto (están en la raíz, un nivel arriba)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from loggro_client import LoggroClient, LOCATION_STOCK_ID  # noqa: E402
+import loggro_session  # noqa: E402  (cliente Loggro compartido)
 import homologacion_store as store  # noqa: E402
 import loggro_intake  # noqa: E402  (extractor + chat reutilizables)
+import informe_creditos  # noqa: E402  (agrupación de cartera, compartida con el CSV)
+from backend.catalogo_api import router as catalogo_router  # noqa: E402
 
 app = FastAPI(title="Loggro Homologación API", version="1.0.0")
 
+# Orígenes permitidos: el frontend local + los que se agreguen por entorno
+# (CORS_ORIGINS="https://apptender.com,https://otra.app") para que las apps externas
+# puedan llamar la API de catálogo desde el navegador. Las llamadas servidor-a-servidor
+# no pasan por CORS.
+def _puerto_web() -> int:
+    """Puerto del frontend, desde ports.json (misma fuente que start.ps1 y Vite)."""
+    try:
+        import json as _json
+        ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ports.json")
+        with open(ruta, encoding="utf-8") as f:
+            return int(_json.load(f)["web"])
+    except Exception:
+        return 8091
+
+
+_ORIGENES = [f"http://localhost:{_puerto_web()}", f"http://127.0.0.1:{_puerto_web()}"] + [
+    o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_ORIGENES,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# API de carta/catálogo para apps externas (Apptender, etc.) -> /api/catalogo/*
+app.include_router(catalogo_router)
+
 # --------------------------------------------------------------------------- #
 # Estado / caché
 # --------------------------------------------------------------------------- #
-_cli: Optional[LoggroClient] = None
 # Caché en memoria. Se auto-refresca al pasar el TTL; o manualmente vía /api/cache/refresh.
 CACHE_TTL = 600  # segundos (10 min)
 _cache: dict[str, Any] = {
@@ -52,11 +77,8 @@ _cache: dict[str, Any] = {
 
 
 def cliente() -> LoggroClient:
-    global _cli
-    if _cli is None:
-        _cli = LoggroClient()
-        _cli.login()
-    return _cli
+    """Cliente Loggro compartido (un solo login por proceso, ver loggro_session.py)."""
+    return loggro_session.cliente()
 
 
 def _expirado(ts: float) -> bool:
@@ -678,3 +700,44 @@ def eliminar_gasto(expense_id: str):
     except Exception as e:
         raise HTTPException(502, f"Error eliminando el gasto en Loggro: {e}")
     return {"ok": True, "expense_id": expense_id}
+
+
+# --------------------------------------------------------------------------- #
+# Cartera (créditos / fiados de clientes)
+# --------------------------------------------------------------------------- #
+@app.get("/api/creditos")
+def get_creditos(desde: str = "2020-01-01", hasta: Optional[str] = None):
+    """Deuda por cliente: facturas a crédito pendientes, agrupadas y con antigüedad.
+
+    La lógica de agrupación vive en `informe_creditos.py` (mismo cálculo que el
+    informe de consola y el CSV) para que las cifras no se puedan desincronizar.
+    """
+    hoy = dt.date.today()
+    fin = dt.date.fromisoformat(hasta) if hasta else hoy
+    try:
+        cli = cliente()
+        facturas = cli.get_credit_invoices(
+            f"{desde}T00:00:00.000Z",
+            f"{(fin + dt.timedelta(days=1)).isoformat()}T00:00:00.000Z",
+        )
+        crudo = cli._get("/clients")
+        catalogo = {c["_id"]: c for c in (crudo.get("data", crudo) if isinstance(crudo, dict) else crudo)}
+    except Exception as e:
+        raise HTTPException(502, f"Error consultando los créditos en Loggro: {e}")
+
+    filas = informe_creditos.agrupar(facturas, hoy, catalogo)
+    return {
+        "generado": hoy.isoformat(),
+        "desde": desde,
+        "hasta": fin.isoformat(),
+        "saldo": sum(f["saldo"] for f in filas),
+        "facturado": sum(f["total"] for f in filas),
+        "abonado": sum(f["abonado"] for f in filas),
+        "clientes": len(filas),
+        "facturas": sum(f["facturas"] for f in filas),
+        "tramos": [
+            {"etiqueta": etiqueta, "monto": sum(f["tramos"].get(etiqueta, 0) for f in filas)}
+            for etiqueta, _, _ in informe_creditos.TRAMOS
+        ],
+        "detalle": filas,
+    }

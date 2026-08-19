@@ -13,6 +13,7 @@ import ProductPicker from "./components/ProductPicker";
 import TirillaUpload from "./components/TirillaUpload";
 import ChatFactura from "./components/ChatFactura";
 import GastosView from "./components/GastosView";
+import CarteraView from "./components/CarteraView";
 
 const cop = new Intl.NumberFormat("es-CO", {
   style: "currency",
@@ -79,7 +80,7 @@ export default function App() {
   const [deleted, setDeleted] = useState(false);
   const [inputMode, setInputMode] = useState<"foto" | "chat">("foto");
   const [factores, setFactores] = useState<Record<string, number>>({});
-  const [vista, setVista] = useState<"compras" | "gastos">("compras");
+  const [vista, setVista] = useState<"compras" | "gastos" | "cartera">("compras");
 
   useEffect(() => {
     api
@@ -318,7 +319,7 @@ export default function App() {
       {/* ---------- Navegación Compras / Gastos ---------- */}
       <div className="mt-6 flex justify-center">
         <div className="inline-flex rounded-xl border border-espresso-600 bg-espresso-950/50 p-1 text-sm">
-          {(["compras", "gastos"] as const).map((v) => (
+          {(["compras", "gastos", "cartera"] as const).map((v) => (
             <button
               key={v}
               onClick={() => setVista(v)}
@@ -335,6 +336,10 @@ export default function App() {
       {vista === "gastos" ? (
         <div className="mt-8">
           <GastosView />
+        </div>
+      ) : vista === "cartera" ? (
+        <div className="mt-8">
+          <CarteraView />
         </div>
       ) : (
       <>

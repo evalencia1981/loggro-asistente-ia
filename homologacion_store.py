@@ -78,6 +78,32 @@ def _kv_cmd(cmd: list) -> Any:
     r.raise_for_status()
     return r.json().get("result")
 
+
+# ---- Acceso genérico al KV (lo reutiliza catalogo_store.py) ---- #
+def kv_disponible() -> bool:
+    """True si hay un almacén remoto (Redis o KV REST); False = solo archivo local."""
+    return bool(_redis_url() or _kv_rest_enabled())
+
+
+def kv_get(key: str) -> str | None:
+    """Lee una clave del KV. None si no hay KV configurado o la clave no existe."""
+    if _redis_url():
+        return _redis().get(key)
+    if _kv_rest_enabled():
+        return _kv_cmd(["GET", key])
+    return None
+
+
+def kv_set(key: str, payload: str) -> bool:
+    """Escribe una clave en el KV. False si no hay KV (el llamador usa archivo local)."""
+    if _redis_url():
+        _redis().set(key, payload)
+        return True
+    if _kv_rest_enabled():
+        _kv_cmd(["SET", key, payload])
+        return True
+    return False
+
 # Código consecutivo de facturación al inicio de la descripción (ej. "000474").
 # Cambia entre facturas, así que NO debe afectar la homologación: lo quitamos.
 # 4+ dígitos para no comerse volúmenes legítimos como "355ML".
@@ -114,20 +140,22 @@ def _migrar(data: Any) -> dict[str, Any]:
     return migrado
 
 
-def cargar(path: str = HOMOLOG_PATH) -> dict[str, Any]:
-    """Carga el almacén (Redis/KV en prod, archivo en local). Migra formato antiguo a v2."""
-    raw = None
-    if _redis_url():
-        raw = _redis().get(_KV_KEY)
-    elif _kv_rest_enabled():
-        raw = _kv_cmd(["GET", _KV_KEY])
-    else:
+def cargar(path: str | None = None) -> dict[str, Any]:
+    """Carga el almacén. Migra formato antiguo a v2.
+
+    Sin `path`: Redis/KV si está configurado (producción), si no el archivo local.
+    Con `path` explícito: SIEMPRE ese archivo, aunque haya Redis. Pasar una ruta y
+    que el dato saliera de Redis era una trampa: el llamador creía estar trabajando
+    contra un archivo de pruebas y estaba tocando producción.
+    """
+    if path is not None or not kv_disponible():
         try:
-            with open(path, encoding="utf-8") as f:
+            with open(path or HOMOLOG_PATH, encoding="utf-8") as f:
                 return _migrar(json.load(f))
         except FileNotFoundError:
             return _empty()
 
+    raw = kv_get(_KV_KEY)
     if not raw:
         return _empty()
     try:
@@ -136,16 +164,17 @@ def cargar(path: str = HOMOLOG_PATH) -> dict[str, Any]:
         return _empty()
 
 
-def guardar(data: dict[str, Any], path: str = HOMOLOG_PATH) -> None:
+def guardar(data: dict[str, Any], path: str | None = None) -> None:
+    """Persiste el almacén.
+
+    Sin `path`: Redis/KV si está configurado (producción), si no el archivo local.
+    Con `path` explícito: SIEMPRE ese archivo, nunca Redis (ver `cargar`).
+    """
     payload = json.dumps(data, ensure_ascii=False)
-    if _redis_url():
-        _redis().set(_KV_KEY, payload)
-        return
-    if _kv_rest_enabled():
-        _kv_cmd(["SET", _KV_KEY, payload])
+    if path is None and kv_set(_KV_KEY, payload):
         return
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path or HOMOLOG_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except OSError as e:
         # En Vercel el filesystem es de solo lectura: sin Redis/KV no hay dónde persistir.

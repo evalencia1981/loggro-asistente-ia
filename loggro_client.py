@@ -139,6 +139,40 @@ class LoggroClient:
         data = self._get("/providers", pagination=False)
         return data.get("data", data) if isinstance(data, dict) else data
 
+    def get_product(self, product_id: str) -> dict:
+        """GET /products/{_id} -> el producto completo (confirmado)."""
+        return self._get(f"/products/{product_id}")
+
+    def get_categories(self) -> list[dict]:
+        """GET /categories -> categorías de la carta [{_id, name, isActive}]."""
+        data = self._get("/categories")
+        return data.get("data", data) if isinstance(data, dict) else data
+
+    # -- escritura de productos (carta) --------------------------------------
+    # CONFIRMADO contra la cuenta Virus pub (2026-07-28):
+    #   * POST /products            -> crea, devuelve el objeto con '_id'
+    #   * POST /products con '_id'  -> edita (nombre, precio, isActive, ...)
+    #   * DELETE /products/{_id}    -> elimina (deja de aparecer en GET /products)
+    #   * PUT /products/{_id}       -> NO existe (404)
+    # OJO: la edición NO es un merge parcial. Un body {_id, price} responde 500
+    # ("Verifique que el producto se encuentre en éste negocio"): hay que mandar el
+    # objeto completo -> leer con get_product(), modificar y reenviar (ver
+    # `aplicar_cambios_producto`). El objeto tal como lo devuelve el GET se acepta
+    # con las referencias anidadas (category, locationStock) o aplanadas a ids.
+    def create_product(self, payload: dict) -> dict:
+        """POST /products -> crea un producto de la carta."""
+        return self._post("/products", payload)
+
+    def update_product(self, payload: dict) -> dict:
+        """POST /products con '_id' -> edita. El payload debe ser el producto COMPLETO."""
+        if not payload.get("_id"):
+            raise ValueError("update_product requiere '_id' en el payload.")
+        return self._post("/products", payload)
+
+    def delete_product(self, product_id: str) -> dict:
+        """DELETE /products/{_id} -> elimina el producto del catálogo."""
+        return self._delete(f"/products/{product_id}")
+
     # -- escritura -----------------------------------------------------------
     def create_movement(self, payload: dict) -> dict:
         """POST /inventories -> crea el movimiento (con '_id' en el body = edición).
@@ -157,6 +191,46 @@ class LoggroClient:
         data = self._get("/inventories", provider=provider, inventoryTypeId=inventory_type_id,
                          inventoryNumber=inventory_number, purchaseStatus=purchase_status)
         return data.get("data", data) if isinstance(data, dict) else data
+
+    # -- créditos de clientes (fiados) ---------------------------------------
+    # CONFIRMADO contra Virus pub (2026-08-14) leyendo la propia web de Loggro
+    # (restobar.loggro.com -> clientCreditsController.js + invoiceService.js):
+    # la cartera NO vive en /clients (su 'creditMovement'/'totalCreditMovement'
+    # están siempre en 0); son facturas con 'status=Por Pagar' y objeto 'credit'.
+    # OJO: 'paidInvoices' se evalúa POR PRESENCIA en el backend -> mandarlo con
+    # cualquier valor (incluso "false") incluye los créditos ya saldados. Para
+    # ver solo lo pendiente hay que OMITIRLO.
+    def get_credit_invoices(self, date_init: str, date_end: str,
+                            client_id: str | None = None,
+                            incluir_pagados: bool = False,
+                            limit: int = 100) -> list[dict]:
+        """GET /invoices?status=Por Pagar -> facturas a crédito (pagina hasta traer todo).
+
+        Cada factura trae client{name,lastName,document}, total, totalPaid,
+        credit{dueDate,dueQuote} y paid.paymentMethodValue[] (los abonos).
+        La deuda de una factura es `total - totalPaid`.
+        """
+        todas: list[dict] = []
+        page = 0
+        while True:
+            params = {"status": "Por Pagar", "dateInit": date_init, "dateEnd": date_end,
+                      "pagination": "true", "limit": limit, "page": page}
+            if client_id:
+                params["clientId"] = client_id
+            if incluir_pagados:
+                params["paidInvoices"] = "true"
+            r = self.s.get(f"{self.base_url}/invoices", params=params, timeout=self.timeout)
+            if r.status_code == 401:
+                self.login()
+                continue
+            r.raise_for_status()
+            data = r.json()
+            filas = data.get("data", []) if isinstance(data, dict) else data
+            todas.extend(filas)
+            total = data.get("count", len(todas)) if isinstance(data, dict) else len(todas)
+            page += 1
+            if not filas or len(todas) >= total:
+                return todas
 
     def register_payment(self, payload: dict) -> dict:
         """POST /inventories/payments  (RUTA POR CONFIRMAR: guardarpagoinventario)."""

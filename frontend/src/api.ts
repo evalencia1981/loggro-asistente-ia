@@ -118,6 +118,43 @@ export interface CrearGastoResult {
   total: number;
 }
 
+// ---- Cartera (créditos de clientes) ----
+export interface CreditoFactura {
+  numero: string;
+  fecha: string; // YYYY-MM-DD (vencimiento, o fecha de la factura si no tiene)
+  dias: number; // días transcurridos; negativo = plazo aún vigente
+  total: number;
+  abonado: number;
+  saldo: number;
+  cuotas: number;
+}
+
+export interface CreditoCliente {
+  cliente: string;
+  documento: string;
+  telefono: string;
+  facturas: number;
+  total: number;
+  abonado: number;
+  saldo: number;
+  dias_mas_vieja: number;
+  tramos: Record<string, number>;
+  detalle: CreditoFactura[];
+}
+
+export interface CarteraResult {
+  generado: string;
+  desde: string;
+  hasta: string;
+  saldo: number;
+  facturado: number;
+  abonado: number;
+  clientes: number;
+  facturas: number;
+  tramos: { etiqueta: string; monto: number }[];
+  detalle: CreditoCliente[];
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
@@ -244,6 +281,15 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(args),
     }).then((r) => json<CrearGastoResult>(r)),
+
+  // ---- Cartera ----
+  creditos: (desde?: string, hasta?: string) => {
+    const qs = new URLSearchParams();
+    if (desde) qs.set("desde", desde);
+    if (hasta) qs.set("hasta", hasta);
+    const q = qs.toString();
+    return fetch(`/api/creditos${q ? `?${q}` : ""}`).then((r) => json<CarteraResult>(r));
+  },
 
   eliminarGasto: (expenseId: string) =>
     fetch(`/api/gastos/${encodeURIComponent(expenseId)}`, { method: "DELETE" }).then((r) =>
