@@ -45,13 +45,17 @@ GEMINI_API_KEY=tu_api_key      # gratis en https://aistudio.google.com/app/apike
 **Manual (dos terminales):**
 ```powershell
 # 1) Backend (desde la raíz)
-python -X utf8 -m uvicorn backend.app:app --reload --port 8000
+python -X utf8 -m uvicorn backend.app:app --reload --port 8090
 # 2) Frontend
 cd frontend
 npm install   # solo la primera vez
 npm run dev
 ```
-Abre **http://localhost:5173**.
+Abre **http://localhost:8091**.
+
+Los puertos de este proyecto son **8090 (API)** y **8091 (web)**, definidos en
+`ports.json` (los leen `start.ps1`, `stop.ps1` y `vite.config.ts`). El reparto de
+puertos entre proyectos está en [docs/PUERTOS.md](docs/PUERTOS.md).
 
 ## Flujo de uso
 

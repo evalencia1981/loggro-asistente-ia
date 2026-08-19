@@ -1,0 +1,6 @@
+{
+  "_comentario": "Puertos de ESTE proyecto. Fuente unica: la leen start.ps1, stop.ps1 y vite.config.ts. Registro de todos los proyectos en docs/PUERTOS.md",
+  "proyecto": "loggro",
+  "api": 8090,
+  "web": 8091
+}
