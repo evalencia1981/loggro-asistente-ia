@@ -38,6 +38,62 @@ function fechaLarga(iso: string): string {
   return d.toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" });
 }
 
+const NEGOCIO = "Virus Pub";
+
+/** Cuántas facturas se listan en el mensaje antes de resumir el resto. */
+const FACTURAS_EN_MENSAJE = 5;
+
+/**
+ * Número en el formato que espera wa.me: solo dígitos, con indicativo de país.
+ * Loggro guarda los celulares colombianos a 10 dígitos (3XX…), sin indicativo.
+ * Devuelve "" si lo que hay no alcanza a ser un número marcable.
+ */
+function aWhatsapp(telefono: string): string {
+  const d = (telefono || "").replace(/\D/g, "");
+  if (!d) return "";
+  if (d.length === 10 && d.startsWith("3")) return `57${d}`; // celular CO sin indicativo
+  if (d.length >= 11 && d.length <= 15) return d; // ya trae indicativo
+  return "";
+}
+
+/**
+ * Mensaje de cobro. Cordial y concreto: saldo, corte y las facturas más
+ * antiguas. Se limita el detalle porque hay clientes con más de 100 cuentas
+ * abiertas y WhatsApp cortaría el mensaje.
+ */
+function mensajeCobro(c: CreditoCliente, generado: string): string {
+  const vencidas = [...c.detalle].sort((a, b) => b.dias - a.dias);
+  const listadas = vencidas.slice(0, FACTURAS_EN_MENSAJE);
+  const resto = vencidas.length - listadas.length;
+
+  const lineas = listadas.map((f) => {
+    const cuando = f.dias < 0 ? `vence el ${fechaLarga(f.fecha)}` : `del ${fechaLarga(f.fecha)}`;
+    return `• ${cop.format(f.saldo)} — cuenta ${f.numero} (${cuando})`;
+  });
+  if (resto > 0) lineas.push(`• y ${resto} ${resto === 1 ? "cuenta más" : "cuentas más"}`);
+
+  const saludo = `¡Hola ${c.cliente.split(" ")[0]}! 👋`;
+  const cierre =
+    c.dias_mas_vieja < 0
+      ? "Cuando quieras pasar a ponerte al día, con gusto te esperamos."
+      : "Cuando puedas pasar a ponerte al día te lo agradecemos muchísimo.";
+
+  return [
+    saludo,
+    "",
+    `Te escribimos de ${NEGOCIO} para contarte cómo va tu cuenta, con corte al ${fechaLarga(generado)}:`,
+    "",
+    `Total pendiente: ${cop.format(c.saldo)} en ${c.facturas} ${c.facturas === 1 ? "cuenta" : "cuentas"}.`,
+    "",
+    ...lineas,
+    "",
+    cierre,
+    "Si ya hiciste el pago, no tengas en cuenta este mensaje.",
+    "",
+    `¡Gracias por acompañarnos! 🍻`,
+  ].join("\n");
+}
+
 function descargarCSV(data: CarteraResult) {
   const cab = ["Cliente", "Documento", "Teléfono", "Cuentas", "Facturado", "Abonado", "Saldo",
     "Días de mora", ...data.tramos.map((t) => ETIQUETA_TRAMO[t.etiqueta] ?? t.etiqueta)];
@@ -63,6 +119,7 @@ export default function CarteraView() {
   const [busqueda, setBusqueda] = useState("");
   const [orden, setOrden] = useState<"saldo" | "mora" | "nombre">("saldo");
   const [abierto, setAbierto] = useState<string | null>(null);
+  const [cobro, setCobro] = useState<CreditoCliente | null>(null);
 
   const cargar = () => {
     setCargando(true);
@@ -248,6 +305,7 @@ export default function CarteraView() {
                   a === `${c.documento}-${c.cliente}` ? null : `${c.documento}-${c.cliente}`
                 )
               }
+              onCobrar={() => setCobro(c)}
             />
           ))}
         </ul>
@@ -256,7 +314,144 @@ export default function CarteraView() {
       <p className="text-center font-mono text-[11px] uppercase tracking-[0.25em] text-sand-500/60">
         {clientes.length} de {data.clientes} clientes
       </p>
+
+      {cobro && (
+        <ModalCobro cliente={cobro} generado={data.generado} onCerrar={() => setCobro(null)} />
+      )}
     </div>
+  );
+}
+
+/**
+ * Previsualización del cobro antes de abrir WhatsApp. El mensaje es editable y
+ * el teléfono también: la mayoría de los clientes en Loggro no lo tiene
+ * registrado, así que se puede escribir aquí sin salir de la vista.
+ *
+ * wa.me solo ABRE la conversación con el texto puesto; el envío final siempre
+ * lo confirma la persona en WhatsApp.
+ */
+function ModalCobro({
+  cliente: c,
+  generado,
+  onCerrar,
+}: {
+  cliente: CreditoCliente;
+  generado: string;
+  onCerrar: () => void;
+}) {
+  const [texto, setTexto] = useState(() => mensajeCobro(c, generado));
+  const [telefono, setTelefono] = useState(c.telefono || "");
+  const numero = aWhatsapp(telefono);
+
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && onCerrar();
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [onCerrar]);
+
+  const abrirWhatsapp = () => {
+    if (!numero) return;
+    window.open(`https://wa.me/${numero}?text=${encodeURIComponent(texto)}`, "_blank", "noopener");
+    onCerrar();
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-espresso-950/80 p-4 backdrop-blur-sm sm:items-center"
+      onClick={onCerrar}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Cobrar por WhatsApp a ${c.cliente}`}
+    >
+      <div
+        className="animate-rise max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-espresso-700 bg-espresso-900 p-6 shadow-panel"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-amber">
+              Cobrar por WhatsApp
+            </p>
+            <h3 className="mt-2 font-display text-xl font-bold text-sand-50">{c.cliente}</h3>
+            <p className="mt-1 text-xs text-sand-500">
+              {cop.format(c.saldo)} en {c.facturas} {c.facturas === 1 ? "cuenta" : "cuentas"} · corte
+              al {fechaLarga(generado)}
+            </p>
+          </div>
+          <button
+            onClick={onCerrar}
+            aria-label="Cerrar"
+            className="shrink-0 rounded-lg p-1.5 text-sand-500 transition hover:bg-espresso-850 hover:text-sand-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <label className="mt-5 block">
+          <span className="font-mono text-[11px] uppercase tracking-wider text-sand-500">
+            Celular
+          </span>
+          <input
+            value={telefono}
+            onChange={(e) => setTelefono(e.target.value)}
+            inputMode="tel"
+            placeholder="300 123 4567"
+            className="mt-1.5 w-full rounded-xl border border-espresso-600 bg-espresso-950/70 px-3 py-2.5 text-sm text-sand-50 outline-none transition placeholder:text-sand-500/60 focus:border-amber focus:shadow-glow"
+          />
+          {telefono.trim() && !numero ? (
+            <span className="mt-1.5 block text-[11px] text-pending">
+              Ese número no parece marcable. Usa 10 dígitos (300…) o incluye el indicativo del país.
+            </span>
+          ) : !c.telefono ? (
+            <span className="mt-1.5 block text-[11px] text-sand-500">
+              Este cliente no tiene celular en Loggro. Escríbelo aquí para enviarle el mensaje.
+            </span>
+          ) : null}
+        </label>
+
+        <label className="mt-4 block">
+          <span className="font-mono text-[11px] uppercase tracking-wider text-sand-500">
+            Mensaje
+          </span>
+          <textarea
+            value={texto}
+            onChange={(e) => setTexto(e.target.value)}
+            rows={13}
+            className="mt-1.5 w-full resize-y rounded-xl border border-espresso-600 bg-espresso-950/70 px-3 py-2.5 text-sm leading-relaxed text-sand-100 outline-none transition focus:border-amber focus:shadow-glow"
+          />
+        </label>
+
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button
+            onClick={onCerrar}
+            className="rounded-xl border border-espresso-600 px-4 py-2.5 text-sm font-semibold text-sand-400 transition hover:border-sand-500 hover:text-sand-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={abrirWhatsapp}
+            disabled={!numero}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#25d366] px-4 py-2.5 text-sm font-bold text-espresso-950 transition hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <IconoWhatsapp />
+            Abrir WhatsApp
+          </button>
+        </div>
+        <p className="mt-3 text-center text-[11px] text-sand-500">
+          Se abre la conversación con el mensaje escrito. Tú decides cuándo enviarlo.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function IconoWhatsapp({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12.04 2c-5.46 0-9.91 4.45-9.91 9.91 0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38a9.87 9.87 0 0 0 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.82 9.82 0 0 0 12.04 2Zm0 18.15h-.01a8.2 8.2 0 0 1-4.19-1.15l-.3-.18-3.12.82.83-3.04-.2-.31a8.19 8.19 0 0 1-1.26-4.38c0-4.54 3.7-8.23 8.25-8.23 2.2 0 4.27.86 5.83 2.42a8.18 8.18 0 0 1 2.41 5.82c0 4.54-3.7 8.23-8.24 8.23Zm4.52-6.16c-.25-.12-1.47-.72-1.69-.81-.23-.08-.39-.12-.56.13-.16.24-.64.8-.79.97-.14.16-.29.18-.54.06-.25-.12-1.05-.39-1.99-1.23-.74-.66-1.23-1.47-1.38-1.72-.14-.25-.01-.38.11-.5.11-.11.25-.29.37-.43.13-.15.17-.25.25-.41.08-.17.04-.31-.02-.43-.06-.12-.56-1.34-.76-1.84-.2-.48-.4-.42-.56-.43h-.47c-.17 0-.43.06-.66.31-.23.25-.86.85-.86 2.07 0 1.22.89 2.4 1.01 2.56.12.17 1.75 2.67 4.23 3.74.59.26 1.05.41 1.41.52.59.19 1.13.16 1.56.1.48-.07 1.47-.6 1.67-1.18.21-.58.21-1.08.15-1.18-.06-.11-.23-.17-.48-.29Z" />
+    </svg>
   );
 }
 
@@ -266,12 +461,14 @@ function FilaCliente({
   proporcion,
   abierto,
   onToggle,
+  onCobrar,
 }: {
   cliente: CreditoCliente;
   indice: number;
   proporcion: number;
   abierto: boolean;
   onToggle: () => void;
+  onCobrar: () => void;
 }) {
   const est = estado(c.dias_mas_vieja);
   return (
@@ -279,10 +476,13 @@ function FilaCliente({
       className="animate-fade border-b border-dashed border-espresso-700 last:border-b-0"
       style={{ animationDelay: `${Math.min(indice, 12) * 35}ms` }}
     >
+      {/* El cobro va fuera del botón que despliega la fila: un botón no puede
+          anidar otro, y el tap en "cobrar" no debe abrir el detalle. */}
+      <div className="flex items-stretch">
       <button
         onClick={onToggle}
         aria-expanded={abierto}
-        className="group w-full px-5 py-4 text-left transition hover:bg-espresso-850/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-amber"
+        className="group min-w-0 flex-1 px-5 py-4 text-left transition hover:bg-espresso-850/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-amber"
       >
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
@@ -319,6 +519,16 @@ function FilaCliente({
           />
         </span>
       </button>
+
+        <button
+          onClick={onCobrar}
+          title={`Cobrar por WhatsApp a ${c.cliente}`}
+          aria-label={`Cobrar por WhatsApp a ${c.cliente}`}
+          className="shrink-0 self-center mr-4 ml-1 rounded-xl border border-espresso-600 p-2.5 text-[#25d366] transition hover:border-[#25d366] hover:bg-[#25d366]/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
+        >
+          <IconoWhatsapp className="h-5 w-5" />
+        </button>
+      </div>
 
       {abierto && (
         <div className="animate-fade border-t border-dashed border-espresso-700 bg-espresso-950/40 px-5 py-4">
