@@ -13,6 +13,7 @@ Correr:  uvicorn backend.app:app --reload --port 8090   (desde la raíz del proy
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 import datetime as dt
@@ -30,6 +31,7 @@ import loggro_session  # noqa: E402  (cliente Loggro compartido)
 import homologacion_store as store  # noqa: E402
 import loggro_intake  # noqa: E402  (extractor + chat reutilizables)
 import informe_creditos  # noqa: E402  (agrupación de cartera, compartida con el CSV)
+import recurrentes_store  # noqa: E402  (beneficiarios recurrentes de gastos)
 from backend.catalogo_api import router as catalogo_router  # noqa: E402
 
 app = FastAPI(title="Loggro Homologación API", version="1.0.0")
@@ -462,6 +464,33 @@ class CrearGastoRequest(BaseModel):
     fecha: Optional[str] = None
 
 
+class RecurrenteRequest(BaseModel):
+    """Beneficiario recurrente. Guarda lo que NO cambia entre pagos."""
+    id: Optional[str] = None            # al editar; si falta se deriva del nombre
+    nombre: str
+    concepto: str = ""                  # vacío = se usa el nombre
+    type_expense_id: str
+    provider_id: Optional[str] = None
+    forma_pago: str = ""
+    sale_de_caja: bool = False
+    monto_sugerido: int = 0
+    periodicidad: str = "libre"
+    activo: bool = True
+    notas: str = ""
+
+
+class LineaLote(BaseModel):
+    """Una línea del día de pago: a quién y cuánto."""
+    recurrente_id: str
+    monto: int
+    notas: str = ""
+
+
+class LoteRequest(BaseModel):
+    lineas: list[LineaLote]
+    fecha: Optional[str] = None
+
+
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     """Procesa un turno del chat: actualiza la factura y responde.
@@ -647,9 +676,13 @@ def gastos_chat(req: GastoChatRequest):
     }
 
 
-@app.post("/api/gastos")
-def crear_gasto(req: CrearGastoRequest):
-    """Registra el gasto en Loggro (POST /expenses)."""
+def _registrar_gasto(req: CrearGastoRequest) -> dict[str, Any]:
+    """Arma el payload y crea el gasto en Loggro. Devuelve {expense_id, total}.
+
+    Vive aparte del endpoint porque el registro por lote (día de pago) crea N
+    gastos por el mismo camino: si la construcción del payload se duplicara,
+    un gasto suelto y uno del lote podrían terminar guardándose distinto.
+    """
     if not (req.concepto or "").strip():
         raise HTTPException(400, "El concepto del gasto es obligatorio.")
     if not req.type_expense_id:
@@ -692,6 +725,12 @@ def crear_gasto(req: CrearGastoRequest):
     }
 
 
+@app.post("/api/gastos")
+def crear_gasto(req: CrearGastoRequest):
+    """Registra el gasto en Loggro (POST /expenses)."""
+    return _registrar_gasto(req)
+
+
 @app.delete("/api/gastos/{expense_id}")
 def eliminar_gasto(expense_id: str):
     """Elimina (soft delete) un gasto: DELETE /expenses/{_id}."""
@@ -700,6 +739,255 @@ def eliminar_gasto(expense_id: str):
     except Exception as e:
         raise HTTPException(502, f"Error eliminando el gasto en Loggro: {e}")
     return {"ok": True, "expense_id": expense_id}
+
+
+# --------------------------------------------------------------------------- #
+# Beneficiarios recurrentes (nómina y pagos que se repiten)
+# --------------------------------------------------------------------------- #
+def _aviso_persistencia(donde: Optional[str]) -> dict[str, Any]:
+    """Avisa cuando un guardado se quedó en el disco local pese a haber KV.
+
+    Sin esto el usuario cree que su lista viajó a produccion y no fue asi: el
+    KV estaba configurado pero caido.
+    """
+    if donde == "local" and recurrentes_store.kv_disponible():
+        return {"persistencia": "local", "aviso":
+                "Guardado solo en este equipo: el Redis/KV no responde. "
+                "Revisa REDIS_URL para que la lista viaje a produccion."}
+    return {"persistencia": donde or "kv"}
+
+
+def _dias_desde(iso: Optional[str]) -> Optional[int]:
+    """Días transcurridos desde una fecha ISO. None si nunca se ha pagado."""
+    if not iso:
+        return None
+    try:
+        return (dt.date.today() - dt.date.fromisoformat(iso[:10])).days
+    except ValueError:
+        return None
+
+
+@app.get("/api/gastos/recurrentes")
+def listar_recurrentes(incluir_inactivos: bool = Query(False)):
+    """Lista de beneficiarios recurrentes, con el aviso de 'hace N días'.
+
+    `vencido` es solo informativo: marca que pasó el periodo nominal desde el
+    último pago. Nunca dispara la creación de un gasto — los montos varían
+    demasiado como para registrarlos sin que alguien los digite.
+    """
+    try:
+        filas = recurrentes_store.listar(incluir_inactivos=incluir_inactivos)
+    except Exception as e:
+        raise HTTPException(502, f"Error leyendo los recurrentes: {e}")
+
+    for f in filas:
+        dias = _dias_desde(f.get("ultimo_pago"))
+        f["dias_desde_ultimo"] = dias
+        periodo = recurrentes_store.DIAS_PERIODO.get(f.get("periodicidad") or "")
+        f["vencido"] = bool(periodo and dias is not None and dias >= periodo)
+    return {"items": filas, "total": len(filas)}
+
+
+@app.post("/api/gastos/recurrentes")
+def guardar_recurrente(req: RecurrenteRequest):
+    """Crea o actualiza un beneficiario recurrente."""
+    try:
+        slug, _, donde = recurrentes_store.guardar_item(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Error guardando el recurrente: {e}")
+    return {"ok": True, "id": slug, **_aviso_persistencia(donde)}
+
+
+@app.delete("/api/gastos/recurrentes/{slug}")
+def eliminar_recurrente(slug: str):
+    """Quita un beneficiario de la lista (no toca los gastos ya registrados)."""
+    try:
+        _, donde = recurrentes_store.eliminar(slug)
+    except Exception as e:
+        raise HTTPException(502, f"Error eliminando el recurrente: {e}")
+    return {"ok": True, "id": slug, **_aviso_persistencia(donde)}
+
+
+@app.post("/api/gastos/lote")
+def crear_gastos_lote(req: LoteRequest):
+    """Día de pago: crea UN gasto por beneficiario, no uno combinado.
+
+    En el historial hay registros como "nomina stalle y munera (400.000 y 12…)"
+    que ya no se pueden separar por persona. Por eso cada línea es su propio
+    gasto, con el concepto normalizado del beneficiario.
+
+    Una línea que falle no aborta las demás: se devuelve el detalle por línea
+    para que la vista muestre qué entró y qué no.
+    """
+    if not req.lineas:
+        raise HTTPException(400, "No hay líneas para registrar.")
+
+    data = recurrentes_store.cargar()
+    fecha = _fecha_iso(req.fecha)
+    resultados: list[dict[str, Any]] = []
+
+    for linea in req.lineas:
+        item = data["items"].get(linea.recurrente_id)
+        if not item:
+            resultados.append({
+                "recurrente_id": linea.recurrente_id, "nombre": linea.recurrente_id,
+                "ok": False, "error": "El beneficiario ya no está en la lista.",
+            })
+            continue
+        if linea.monto <= 0:
+            resultados.append({
+                "recurrente_id": linea.recurrente_id, "nombre": item["nombre"],
+                "ok": False, "error": "El monto debe ser mayor que cero.",
+            })
+            continue
+
+        gasto = CrearGastoRequest(
+            type_expense_id=item["type_expense_id"],
+            provider_id=item.get("provider_id"),
+            forma_pago=item.get("forma_pago", ""),
+            concepto=item["concepto"],
+            notas=linea.notas or item.get("notas", ""),
+            subtotal=linea.monto,
+            impuestos=0,
+            sale_de_caja=bool(item.get("sale_de_caja")),
+            fecha=fecha,
+        )
+        try:
+            r = _registrar_gasto(gasto)
+        except HTTPException as e:
+            resultados.append({
+                "recurrente_id": linea.recurrente_id, "nombre": item["nombre"],
+                "ok": False, "error": str(e.detail),
+            })
+            continue
+
+        # `persistir=False` + un guardado al final: así N pagos no escriben N
+        # veces en Redis.
+        recurrentes_store.marcar_pago(linea.recurrente_id, fecha, linea.monto,
+                                      data=data, persistir=False)
+        resultados.append({
+            "recurrente_id": linea.recurrente_id, "nombre": item["nombre"],
+            "ok": True, "expense_id": r["expense_id"], "total": r["total"],
+        })
+
+    if any(r["ok"] for r in resultados):
+        try:
+            recurrentes_store.guardar(data)
+        except Exception as e:
+            # Los gastos SÍ quedaron en Loggro; solo se perdió el "último pago".
+            print("[crear_gastos_lote] No se pudo guardar el último pago:", e)
+
+    creados = [r for r in resultados if r["ok"]]
+    return {
+        "ok": len(creados) == len(resultados),
+        "creados": len(creados),
+        "fallidos": len(resultados) - len(creados),
+        "total": sum(r.get("total", 0) for r in creados),
+        "fecha": fecha,
+        "detalle": resultados,
+    }
+
+
+# Palabras que acompañan al beneficiario pero no lo identifican. Sin ellas, lo
+# que queda de "nomina stalle" o "Pago simon" es el nombre.
+_RUIDO_CONCEPTO = {
+    "nomina", "pago", "pagos", "pagar", "adelanto", "abono", "completo", "compra",
+    "compras", "factura", "efectivo", "transferencia", "recibo", "cuenta",
+    "de", "del", "la", "el", "los", "las", "y", "e", "a", "al", "por", "con",
+    "para", "se", "le", "que", "es", "en", "sale", "mas", "menos", "dia", "dias",
+    "semana", "quincena", "mes", "anterior", "este", "esta", "hoy", "ayer",
+    "tipo", "unidades", "unidad", "total",
+}
+
+# Un gasto con muchas palabras es una compra surtida ("zanahoria mango limon
+# hierbabuena crispetas donas"): repartirle el total a cada palabra daría un
+# monto sugerido falso. Un pago a una persona cabe de sobra en tres.
+_MAX_PALABRAS_CONCEPTO = 3
+
+
+@app.get("/api/gastos/recurrentes/sugerencias")
+def sugerir_recurrentes(dias: int = Query(180, ge=30, le=730)):
+    """Propone beneficiarios recurrentes leyendo el historial de gastos.
+
+    Sirve para sembrar la lista sin escribirla a mano y sin que se olvide
+    alguien. Agrupa por la palabra significativa de la descripción porque el
+    mismo pago está escrito de varias formas ("Nomina Simon", "Pago simon",
+    "simon nomina 09/05" son todos Simón).
+
+    No crea nada: devuelve candidatos para que la vista los ofrezca.
+    """
+    hoy = dt.date.today()
+    desde = hoy - dt.timedelta(days=dias)
+    try:
+        gastos = cliente().get_expenses(
+            f"{desde.isoformat()}T00:00:00.000Z",
+            f"{(hoy + dt.timedelta(days=1)).isoformat()}T00:00:00.000Z",
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Error consultando el historial de gastos: {e}")
+
+    def _ref_id(v: Any) -> Optional[str]:
+        """El campo puede venir poblado (dict) o como id suelto."""
+        if isinstance(v, dict):
+            return v.get("_id")
+        return v or None
+
+    ya = set(recurrentes_store.cargar()["items"].keys())
+    candidatos: dict[str, dict[str, Any]] = {}
+
+    for g in gastos:
+        desc = _sin_acentos(g.get("description") or "").lower()
+        # Fuera fechas (09/05), montos pegados (400000) y signos.
+        desc = re.sub(r"\d+[/-]\d+([/-]\d+)?", " ", desc)
+        desc = re.sub(r"[^a-z\s]", " ", desc)
+        fecha = (g.get("date") or "")[:10]
+        total = (g.get("subTotal") or 0) + (g.get("taxes") or 0)
+        tipo = _ref_id(g.get("typeExpense"))
+
+        palabras = [p for p in desc.split()
+                    if len(p) >= 4 and p not in _RUIDO_CONCEPTO]
+        if not palabras or len(palabras) > _MAX_PALABRAS_CONCEPTO:
+            continue
+
+        for palabra in palabras:
+            c = candidatos.setdefault(palabra, {
+                "veces": 0, "ultimo_pago": "", "montos": [], "tipos": {},
+            })
+            c["veces"] += 1
+            c["montos"].append(int(total))
+            if tipo:
+                c["tipos"][tipo] = c["tipos"].get(tipo, 0) + 1
+            if fecha >= c["ultimo_pago"]:
+                c["ultimo_pago"] = fecha
+
+    tipos_nombre = {t["id"]: t["name"] for t in cargar_tipos_gasto()}
+    salida = []
+    for palabra, c in candidatos.items():
+        if c["veces"] < 3:            # 3+ apariciones = se repite de verdad
+            continue
+        slug = recurrentes_store.slugify(palabra)
+        tipo_id = max(c["tipos"], key=c["tipos"].get) if c["tipos"] else None
+        # Mediana, no el último ni el promedio: con montos que van de 25.500 a
+        # 144.500 el promedio lo estira un pago grande y el último es azar.
+        montos = sorted(c["montos"])
+        salida.append({
+            "id": slug,
+            "nombre": palabra.capitalize(),
+            "veces": c["veces"],
+            "ultimo_pago": c["ultimo_pago"] or None,
+            "dias_desde_ultimo": _dias_desde(c["ultimo_pago"]),
+            "monto_sugerido": montos[len(montos) // 2],
+            "monto_min": montos[0],
+            "monto_max": montos[-1],
+            "type_expense_id": tipo_id,
+            "tipo_nombre": tipos_nombre.get(tipo_id or "", ""),
+            "ya_registrado": slug in ya,
+        })
+
+    salida.sort(key=lambda s: s["veces"], reverse=True)
+    return {"desde": desde.isoformat(), "hasta": hoy.isoformat(), "sugerencias": salida}
 
 
 # --------------------------------------------------------------------------- #

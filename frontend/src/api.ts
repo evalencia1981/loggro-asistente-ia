@@ -118,6 +118,67 @@ export interface CrearGastoResult {
   total: number;
 }
 
+// ---- Beneficiarios recurrentes (nómina y pagos que se repiten) ----
+export type Periodicidad = "semanal" | "quincenal" | "mensual" | "libre";
+
+export interface Recurrente {
+  id: string;
+  nombre: string;
+  concepto: string; // texto que se escribe igual en todos sus gastos
+  type_expense_id: string;
+  provider_id: string | null;
+  forma_pago: string;
+  sale_de_caja: boolean;
+  monto_sugerido: number;
+  periodicidad: Periodicidad;
+  activo: boolean;
+  notas: string;
+  ultimo_pago: string | null; // YYYY-MM-DD
+  dias_desde_ultimo: number | null;
+  vencido: boolean; // pasó el periodo nominal; es un aviso, no dispara nada
+}
+
+/** Sugerencia leída del historial de Loggro; aún no está guardada. */
+export interface SugerenciaRecurrente {
+  id: string;
+  nombre: string;
+  veces: number;
+  ultimo_pago: string | null;
+  dias_desde_ultimo: number | null;
+  monto_sugerido: number; // mediana: los montos de una misma persona oscilan mucho
+  monto_min: number;
+  monto_max: number;
+  type_expense_id: string | null;
+  tipo_nombre: string;
+  ya_registrado: boolean;
+}
+
+export interface LoteLineaResult {
+  recurrente_id: string;
+  nombre: string;
+  ok: boolean;
+  expense_id?: string | null;
+  total?: number;
+  error?: string;
+}
+
+export interface LoteResult {
+  ok: boolean;
+  creados: number;
+  fallidos: number;
+  total: number;
+  fecha: string;
+  detalle: LoteLineaResult[];
+}
+
+/** `aviso` llega cuando el guardado se quedó local porque el KV no respondió. */
+export interface GuardadoResult {
+  ok: boolean;
+  id: string;
+  persistencia: "kv" | "local";
+  aviso?: string;
+}
+
 // ---- Cartera (créditos de clientes) ----
 export interface CreditoFactura {
   numero: string;
@@ -294,5 +355,39 @@ export const api = {
   eliminarGasto: (expenseId: string) =>
     fetch(`/api/gastos/${encodeURIComponent(expenseId)}`, { method: "DELETE" }).then((r) =>
       json<{ ok: boolean; expense_id: string }>(r)
+    ),
+
+  // ---- Recurrentes ----
+  recurrentes: () =>
+    fetch("/api/gastos/recurrentes").then((r) =>
+      json<{ items: Recurrente[]; total: number }>(r)
+    ),
+
+  guardarRecurrente: (args: Partial<Recurrente> & { nombre: string; type_expense_id: string }) =>
+    fetch("/api/gastos/recurrentes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    }).then((r) => json<GuardadoResult>(r)),
+
+  eliminarRecurrente: (id: string) =>
+    fetch(`/api/gastos/recurrentes/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) =>
+      json<GuardadoResult>(r)
+    ),
+
+  /** Día de pago: un gasto por beneficiario, nunca uno combinado. */
+  crearGastosLote: (args: {
+    lineas: { recurrente_id: string; monto: number; notas?: string }[];
+    fecha?: string | null;
+  }) =>
+    fetch("/api/gastos/lote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    }).then((r) => json<LoteResult>(r)),
+
+  sugerenciasRecurrentes: (dias = 180) =>
+    fetch(`/api/gastos/recurrentes/sugerencias?dias=${dias}`).then((r) =>
+      json<{ desde: string; hasta: string; sugerencias: SugerenciaRecurrente[] }>(r)
     ),
 };

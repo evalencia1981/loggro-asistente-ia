@@ -6,11 +6,13 @@ import {
   type GastoChatResult,
   type GastoExtraccion,
   type Provider,
+  type Recurrente,
   type Responsable,
   type TipoGasto,
 } from "../api";
 import ImagenUpload from "./ImagenUpload";
 import ChatCaptura from "./ChatCaptura";
+import RecurrentesPanel from "./RecurrentesPanel";
 
 const cop = new Intl.NumberFormat("es-CO", {
   style: "currency",
@@ -43,7 +45,7 @@ export default function GastosView() {
   const [tipos, setTipos] = useState<TipoGasto[]>([]);
   const [responsables, setResponsables] = useState<Responsable[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
-  const [inputMode, setInputMode] = useState<"foto" | "chat">("foto");
+  const [inputMode, setInputMode] = useState<"foto" | "chat" | "recurrente">("foto");
 
   // Formulario del gasto
   const [fecha, setFecha] = useState(hoyISO());
@@ -84,6 +86,26 @@ export default function GastosView() {
     if (r.tipo_sugerido) setTypeExpenseId(r.tipo_sugerido);
     if (r.responsable_sugerido) setPaidToId(r.responsable_sugerido);
     setNitSugerido(g.proveedor?.nit || null);
+    setResult(null);
+    setDeleted(false);
+    setError(null);
+  };
+
+  /** Llena el formulario desde un beneficiario recurrente.
+
+      El concepto y el tipo vienen fijos (es lo que evita que el mismo pago se
+      escriba de seis formas); el monto llega como sugerencia y se ajusta. */
+  const aplicarRecurrente = (r: Recurrente) => {
+    setConcepto(r.concepto);
+    setTypeExpenseId(r.type_expense_id);
+    setProviderId(r.provider_id || "");
+    setFormaPago(r.forma_pago);
+    setSaleDeCaja(r.sale_de_caja);
+    setSubtotal(r.monto_sugerido);
+    setImpuestos(0);
+    setInvoiceNumber("");
+    setFecha(hoyISO());
+    setNitSugerido(null);
     setResult(null);
     setDeleted(false);
     setError(null);
@@ -162,15 +184,27 @@ export default function GastosView() {
               >
                 💬 Chat / Voz
               </button>
+              <button
+                onClick={() => setInputMode("recurrente")}
+                className={`rounded-md px-3 py-1 font-medium transition ${
+                  inputMode === "recurrente" ? "bg-amber text-espresso-950" : "text-sand-400 hover:text-amber"
+                }`}
+              >
+                ⭐ Recurrente
+              </button>
             </div>
           </div>
           <p className="mb-3 mt-1 text-xs text-sand-500">
             {inputMode === "foto"
               ? "Sube la foto del recibo y la IA llena el gasto."
-              : "Dicta o escribe el gasto y la IA lo arma."}
+              : inputMode === "chat"
+              ? "Dicta o escribe el gasto y la IA lo arma."
+              : "Nómina y pagos que se repiten. El concepto queda fijo; el monto lo pones tú."}
           </p>
 
-          {inputMode === "foto" ? (
+          {inputMode === "recurrente" ? (
+            <RecurrentesPanel tipos={tipos} providers={providers} onAplicar={aplicarRecurrente} />
+          ) : inputMode === "foto" ? (
             <ImagenUpload<GastoExtractResult>
               extraer={api.gastosExtraer}
               onResult={aplicarGasto}
