@@ -76,37 +76,57 @@ def normalizar_codigo(codigo: str) -> str:
 # --------------------------------------------------------------------------- #
 # Persistencia (Redis/KV en prod, archivo JSON en desarrollo)
 # --------------------------------------------------------------------------- #
+def _archivo() -> dict[str, Any]:
+    try:
+        with open(CATALOGO_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return _empty()
+
+
 def cargar() -> dict[str, Any]:
+    """Carga los vínculos código -> producto.
+
+    Si el KV está configurado pero no responde, cae al archivo local en vez de
+    fallar. "No responde" no es "está vacío": devolver vacío haría que las apps
+    externas crean que sus productos no están vinculados y los vuelvan a crear.
+    """
     if not _kv.kv_disponible():
-        try:
-            with open(CATALOGO_PATH, encoding="utf-8") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return _empty()
+        data = _archivo()
     else:
-        raw = _kv.kv_get(_kv_key())
-        if not raw:
-            return _empty()
         try:
-            data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return _empty()
+            raw = _kv.kv_get(_kv_key())
+        except Exception as e:
+            print(f"[catalogo] KV no responde ({e}); leyendo archivo local.")
+            data = _archivo()
+        else:
+            if not raw:
+                return _empty()
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return _empty()
     if not isinstance(data, dict) or "apps" not in data:
         return _empty()
     return data
 
 
-def guardar(data: dict[str, Any]) -> None:
+def guardar(data: dict[str, Any]) -> str:
+    """Persiste los vínculos. Devuelve dónde quedó: "kv" o "local"."""
     payload = json.dumps(data, ensure_ascii=False)
-    if _kv.kv_set(_kv_key(), payload):
-        return
+    try:
+        if _kv.kv_set(_kv_key(), payload):
+            return "kv"
+    except Exception as e:
+        print(f"[catalogo] KV no responde al guardar ({e}); se escribe local.")
     try:
         with open(CATALOGO_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        return "local"
     except OSError as e:
         raise RuntimeError(
-            "No se pudo guardar el catálogo: el almacenamiento no es escribible y no "
-            "hay Redis/KV configurado. Define REDIS_URL (o KV_REST_API_URL/"
+            "No se pudo guardar el catálogo: el almacenamiento no es escribible y "
+            "el Redis/KV no responde. Revisa REDIS_URL (o KV_REST_API_URL/"
             f"KV_REST_API_TOKEN) en el entorno. Detalle: {e}"
         ) from e
 

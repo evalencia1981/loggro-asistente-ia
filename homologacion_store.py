@@ -140,6 +140,14 @@ def _migrar(data: Any) -> dict[str, Any]:
     return migrado
 
 
+def _archivo(path: str | None) -> dict[str, Any]:
+    try:
+        with open(path or HOMOLOG_PATH, encoding="utf-8") as f:
+            return _migrar(json.load(f))
+    except FileNotFoundError:
+        return _empty()
+
+
 def cargar(path: str | None = None) -> dict[str, Any]:
     """Carga el almacén. Migra formato antiguo a v2.
 
@@ -147,15 +155,24 @@ def cargar(path: str | None = None) -> dict[str, Any]:
     Con `path` explícito: SIEMPRE ese archivo, aunque haya Redis. Pasar una ruta y
     que el dato saliera de Redis era una trampa: el llamador creía estar trabajando
     contra un archivo de pruebas y estaba tocando producción.
+
+    Si el KV está configurado pero no responde, se cae al archivo del repo en vez
+    de fallar. Cuando la base gratuita de Redis Cloud fue eliminada, esto era un
+    500 y dejaba la vista de compras inservible; con la última homologación
+    versionada a mano se sigue trabajando.
     """
     if path is not None or not kv_disponible():
-        try:
-            with open(path or HOMOLOG_PATH, encoding="utf-8") as f:
-                return _migrar(json.load(f))
-        except FileNotFoundError:
-            return _empty()
+        return _archivo(path)
 
-    raw = kv_get(_KV_KEY)
+    try:
+        raw = kv_get(_KV_KEY)
+    except Exception as e:
+        # OJO: "no responde" NO es lo mismo que "está vacío". Devolver _empty()
+        # aquí haría que la app crea que no hay nada homologado y vuelva a
+        # preguntar por ítems que ya sabía.
+        print(f"[homologacion] KV no responde ({e}); leyendo archivo local.")
+        return _archivo(None)
+
     if not raw:
         return _empty()
     try:
@@ -164,24 +181,32 @@ def cargar(path: str | None = None) -> dict[str, Any]:
         return _empty()
 
 
-def guardar(data: dict[str, Any], path: str | None = None) -> None:
-    """Persiste el almacén.
+def guardar(data: dict[str, Any], path: str | None = None) -> str:
+    """Persiste el almacén. Devuelve dónde quedó: "kv" o "local".
 
     Sin `path`: Redis/KV si está configurado (producción), si no el archivo local.
     Con `path` explícito: SIEMPRE ese archivo, nunca Redis (ver `cargar`).
+
+    Devolver "local" cuando se esperaba "kv" es la señal de que el almacén remoto
+    está caído y ese guardado no viajó a producción.
     """
     payload = json.dumps(data, ensure_ascii=False)
-    if path is None and kv_set(_KV_KEY, payload):
-        return
+    if path is None:
+        try:
+            if kv_set(_KV_KEY, payload):
+                return "kv"
+        except Exception as e:
+            print(f"[homologacion] KV no responde al guardar ({e}); se escribe local.")
     try:
         with open(path or HOMOLOG_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        return "local"
     except OSError as e:
-        # En Vercel el filesystem es de solo lectura: sin Redis/KV no hay dónde persistir.
+        # En Vercel el filesystem es de solo lectura: sin KV vivo no hay dónde persistir.
         # Mensaje explícito para no fallar en silencio (antes el tap "no seleccionaba").
         raise RuntimeError(
             "No se pudo guardar la homologación: el almacenamiento no es escribible "
-            "y no hay Redis/KV configurado. Define REDIS_URL (o KV_REST_API_URL/"
+            "y el Redis/KV no responde. Revisa REDIS_URL (o KV_REST_API_URL/"
             f"KV_REST_API_TOKEN) en el entorno. Detalle: {e}"
         ) from e
 
