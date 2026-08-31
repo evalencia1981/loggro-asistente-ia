@@ -35,3 +35,6 @@ catalogo.json
 # Informes generados (contienen datos de clientes: nombres, cedulas, deudas)
 informe_creditos.csv
 informe_creditos.html
+
+.vercel
+.env*
