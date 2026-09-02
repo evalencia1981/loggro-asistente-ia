@@ -171,6 +171,40 @@ export interface LoteResult {
   detalle: LoteLineaResult[];
 }
 
+// ---- Utilidad (ventas vs compras + gastos) ----
+export interface PeriodoUtilidad {
+  periodo: string; // YYYY-MM
+  ventas: number;
+  compras: number;
+  gastos: number;
+  salidas: number; // compras + gastos
+  utilidad: number;
+  margen: number; // % sobre la venta
+  peso_salidas: number; // % que pesan las salidas sobre la venta
+  n_facturas: number;
+  n_compras: number;
+  n_gastos: number;
+}
+
+/** Aviso de que la información podría estar incompleta. No es un veredicto. */
+export interface AlertaUtilidad {
+  tipo: "fecha_imposible" | "salidas_bajas" | "dias_sin_salidas" | "recurrente_vencido";
+  severidad: "alta" | "media";
+  titulo: string;
+  detalle: string;
+  periodo?: string;
+  items?: (string | Record<string, string | number>)[];
+}
+
+export interface UtilidadResult {
+  desde: string;
+  hasta: string;
+  corte_jornada: number;
+  periodos: PeriodoUtilidad[];
+  total: Omit<PeriodoUtilidad, "periodo" | "peso_salidas">;
+  alertas: AlertaUtilidad[];
+}
+
 /** `aviso` llega cuando el guardado se quedó local porque el KV no respondió. */
 export interface GuardadoResult {
   ok: boolean;
@@ -385,6 +419,16 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(args),
     }).then((r) => json<LoteResult>(r)),
+
+  // ---- Utilidad ----
+  utilidad: (args: { desde?: string; hasta?: string; meses?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (args.desde) qs.set("desde", args.desde);
+    if (args.hasta) qs.set("hasta", args.hasta);
+    if (args.meses) qs.set("meses", String(args.meses));
+    const q = qs.toString();
+    return fetch(`/api/utilidad${q ? `?${q}` : ""}`).then((r) => json<UtilidadResult>(r));
+  },
 
   sugerenciasRecurrentes: (dias = 180) =>
     fetch(`/api/gastos/recurrentes/sugerencias?dias=${dias}`).then((r) =>

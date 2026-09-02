@@ -32,6 +32,7 @@ import homologacion_store as store  # noqa: E402
 import loggro_intake  # noqa: E402  (extractor + chat reutilizables)
 import informe_creditos  # noqa: E402  (agrupación de cartera, compartida con el CSV)
 import recurrentes_store  # noqa: E402  (beneficiarios recurrentes de gastos)
+import informe_utilidad  # noqa: E402  (utilidad: ventas vs compras+gastos)
 from backend.catalogo_api import router as catalogo_router  # noqa: E402
 
 app = FastAPI(title="Loggro Homologación API", version="1.0.0")
@@ -1029,3 +1030,30 @@ def get_creditos(desde: str = "2020-01-01", hasta: Optional[str] = None):
         ],
         "detalle": filas,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Utilidad (ventas contra compras + gastos)
+# --------------------------------------------------------------------------- #
+@app.get("/api/utilidad")
+def get_utilidad(desde: Optional[str] = None, hasta: Optional[str] = None,
+                 meses: int = Query(6, ge=1, le=36)):
+    """Utilidad mes a mes y avisos de registros que podrían faltar.
+
+    La agrupación vive en `informe_utilidad.py`, el mismo módulo que usan la
+    consola y el CSV, para que las cifras no se puedan desincronizar.
+    """
+    fin = dt.date.fromisoformat(hasta) if hasta else dt.date.today()
+    if desde:
+        ini = dt.date.fromisoformat(desde)
+    else:
+        m = fin.month - meses
+        ini = dt.date(fin.year + (m - 1) // 12, (m - 1) % 12 + 1, 1)
+    if ini > fin:
+        raise HTTPException(400, "La fecha inicial es posterior a la final.")
+
+    try:
+        crudos = informe_utilidad.traer(cliente(), ini, fin)
+    except Exception as e:
+        raise HTTPException(502, f"Error consultando ventas/compras/gastos en Loggro: {e}")
+    return informe_utilidad.agrupar(crudos, ini, fin)
