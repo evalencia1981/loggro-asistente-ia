@@ -15,6 +15,7 @@ import ChatFactura from "./components/ChatFactura";
 import GastosView from "./components/GastosView";
 import CarteraView from "./components/CarteraView";
 import UtilidadView from "./components/UtilidadView";
+import AccesoGate from "./components/AccesoGate";
 
 const cop = new Intl.NumberFormat("es-CO", {
   style: "currency",
@@ -54,6 +55,12 @@ function parseTirilla(text: string): TirillaItem[] {
 }
 
 export default function App() {
+  // La puerta va por fuera de todo: sin sesión no se monta nada de la consola.
+  // La protección real está en el backend (acceso.py); esto es la navegación.
+  return <AccesoGate>{(modo, salir) => <Consola modo={modo} onSalir={salir} />}</AccesoGate>;
+}
+
+function Consola({ modo, onSalir }: { modo: "dueno" | "demo"; onSalir: () => void }) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [providerId, setProviderId] = useState("");
   const [text, setText] = useState("");
@@ -298,6 +305,16 @@ export default function App() {
             )}
           </div>
 
+          <button
+            onClick={onSalir}
+            title={modo === "demo" ? "Salir del demo" : "Cerrar sesión"}
+            className="inline-flex items-center gap-2 rounded-full border border-espresso-600 bg-espresso-850 px-3.5 py-2 text-xs font-semibold text-sand-400 transition hover:border-pending hover:text-pending"
+          >
+            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
+            </svg>
+            Salir
+          </button>
           <button
             onClick={sincronizar}
             disabled={syncing}

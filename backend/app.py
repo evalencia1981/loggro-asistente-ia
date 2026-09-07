@@ -20,8 +20,9 @@ import datetime as dt
 import unicodedata
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, Request, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 # Importar módulos del proyecto (están en la raíz, un nivel arriba)
@@ -33,9 +34,18 @@ import loggro_intake  # noqa: E402  (extractor + chat reutilizables)
 import informe_creditos  # noqa: E402  (agrupación de cartera, compartida con el CSV)
 import recurrentes_store  # noqa: E402  (beneficiarios recurrentes de gastos)
 import informe_utilidad  # noqa: E402  (utilidad: ventas vs compras+gastos)
+import acceso  # noqa: E402  (puerta de acceso por código)
 from backend.catalogo_api import router as catalogo_router  # noqa: E402
 
-app = FastAPI(title="Loggro Homologación API", version="1.0.0")
+# /docs y /openapi.json enumeran todos los endpoints y sus payloads: es un mapa
+# para quien no debería estar. Solo se exponen fuera de producción.
+_EN_VERCEL = bool(os.getenv("VERCEL"))
+app = FastAPI(
+    title="Loggro Homologación API", version="1.0.0",
+    docs_url=None if _EN_VERCEL else "/docs",
+    redoc_url=None,
+    openapi_url=None if _EN_VERCEL else "/openapi.json",
+)
 
 # Orígenes permitidos: el frontend local + los que se agreguen por entorno
 # (CORS_ORIGINS="https://apptender.com,https://otra.app") para que las apps externas
@@ -65,6 +75,120 @@ app.add_middleware(
 
 # API de carta/catálogo para apps externas (Apptender, etc.) -> /api/catalogo/*
 app.include_router(catalogo_router)
+
+
+# --------------------------------------------------------------------------- #
+# Puerta de acceso
+# --------------------------------------------------------------------------- #
+@app.middleware("http")
+async def puerta_de_acceso(request: Request, call_next):
+    """Valida el código ANTES de llegar a cualquier handler.
+
+    Tiene que estar aquí y no en el frontend: esconder pestañas en React no
+    protege nada, los endpoints se llaman igual con curl. Antes de esto,
+    cualquiera con la URL leía la cartera (cédulas y celulares de los clientes)
+    y podía crear gastos reales en Loggro.
+    """
+    ruta = request.url.path
+    if request.method == "OPTIONS" or acceso.ruta_abierta(ruta):
+        return await call_next(request)
+
+    if not acceso.configurado():
+        return JSONResponse(
+            {"detail": "El acceso no está configurado: falta ACCESO_CODIGO en el entorno."},
+            status_code=503,
+        )
+
+    # El header sirve para scripts y curl; la cookie, para el navegador.
+    modo = acceso.modo_de_token(
+        request.headers.get("X-Acceso") or request.cookies.get(acceso.COOKIE)
+    )
+    if not modo:
+        return JSONResponse({"detail": "Se necesita un código de acceso.",
+                             "codigo_requerido": True}, status_code=401)
+
+    if modo == acceso.MODO_DEMO and request.method in acceso.ESCRITURA:
+        return JSONResponse(
+            {"detail": "El modo demo es de solo lectura: no escribe en Loggro.",
+             "modo": modo}, status_code=403)
+
+    request.state.modo = modo
+    respuesta = await call_next(request)
+    respuesta.headers["X-Modo"] = modo
+    return respuesta
+
+
+class AccesoRequest(BaseModel):
+    codigo: str
+
+
+def _ip(request: Request) -> str:
+    """IP del visitante. Detrás de Vercel la real viene en X-Forwarded-For."""
+    reenviada = request.headers.get("x-forwarded-for", "")
+    return reenviada.split(",")[0].strip() or (request.client.host if request.client else "?")
+
+
+@app.get("/api/acceso")
+def estado_acceso(request: Request):
+    """¿Esta sesión ya está adentro, y en qué modo? Lo consulta la pantalla de entrada."""
+    modo = acceso.modo_de_token(
+        request.headers.get("X-Acceso") or request.cookies.get(acceso.COOKIE)
+    )
+    return {
+        "dentro": bool(modo),
+        "modo": modo,
+        "configurado": acceso.configurado(),
+        "demo_disponible": bool(os.getenv("ACCESO_CODIGO_DEMO")),
+    }
+
+
+@app.post("/api/acceso")
+def entrar(req: AccesoRequest, request: Request, response: Response):
+    """Cambia un código por una cookie firmada."""
+    if not acceso.configurado():
+        raise HTTPException(503, "El acceso no está configurado: falta ACCESO_CODIGO.")
+
+    ip = _ip(request)
+    if acceso.bloqueado(ip):
+        raise HTTPException(429, "Demasiados intentos. Espera unos minutos.")
+
+    modo = acceso.verificar_codigo(req.codigo)
+    if not modo:
+        acceso.intento_fallido(ip)
+        raise HTTPException(401, "Código incorrecto.")
+
+    acceso.limpiar_intentos(ip)
+    response.set_cookie(
+        acceso.COOKIE, acceso.crear_token(modo),
+        max_age=acceso.DURACION,
+        httponly=True,            # que el JS de la página no pueda leerla
+        secure=_EN_VERCEL,        # en local se sirve por http
+        samesite="lax",
+    )
+    return {"ok": True, "modo": modo}
+
+
+@app.post("/api/acceso/demo")
+def entrar_demo(response: Response):
+    """Demo de un clic para el portafolio: sin código, siempre solo lectura.
+
+    Solo abre si ACCESO_CODIGO_DEMO está definido. Esa variable es el interruptor
+    del demo: mientras no existan los datos ficticios se deja sin definir, para
+    que un visitante no termine leyendo datos reales.
+    """
+    if not os.getenv("ACCESO_CODIGO_DEMO"):
+        raise HTTPException(404, "El demo no está disponible.")
+    response.set_cookie(
+        acceso.COOKIE, acceso.crear_token(acceso.MODO_DEMO),
+        max_age=acceso.DURACION, httponly=True, secure=_EN_VERCEL, samesite="lax",
+    )
+    return {"ok": True, "modo": acceso.MODO_DEMO}
+
+
+@app.post("/api/acceso/salir")
+def salir(response: Response):
+    response.delete_cookie(acceso.COOKIE)
+    return {"ok": True}
 
 # --------------------------------------------------------------------------- #
 # Estado / caché

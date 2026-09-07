@@ -250,9 +250,32 @@ export interface CarteraResult {
   detalle: CreditoCliente[];
 }
 
+// ---- Acceso ----
+export type ModoAcceso = "dueno" | "demo";
+
+export interface EstadoAcceso {
+  dentro: boolean;
+  modo: ModoAcceso | null;
+  configurado: boolean;
+  demo_disponible: boolean;
+}
+
+/** Evento que dispara cualquier 401: la cookie venció o nunca hubo sesión. */
+export const EVENTO_SIN_ACCESO = "loggro:sin-acceso";
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
+    // Un 401 en cualquier llamada devuelve la app a la pantalla de entrada.
+    // La cookie dura 30 días: sin esto, al vencer se vería una pantalla de
+    // errores sueltos en vez de pedir el código otra vez.
+    if (res.status === 401) {
+      window.dispatchEvent(new CustomEvent(EVENTO_SIN_ACCESO));
+      throw new Error("Se necesita un código de acceso.");
+    }
+    if (res.status === 403) {
+      throw new Error("El modo demo es de solo lectura: no escribe en Loggro.");
+    }
     throw new Error(`${res.status}: ${text.slice(0, 200)}`);
   }
   return res.json() as Promise<T>;
@@ -260,6 +283,30 @@ async function json<T>(res: Response): Promise<T> {
 
 export const api = {
   health: () => fetch("/api/health").then((r) => json<{ ok: boolean }>(r)),
+
+  // ---- Acceso ----
+  acceso: () => fetch("/api/acceso").then((r) => json<EstadoAcceso>(r)),
+
+  entrar: (codigo: string) =>
+    fetch("/api/acceso", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ codigo }),
+    }).then(async (r) => {
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        throw new Error(d.detail || "No se pudo entrar.");
+      }
+      return r.json() as Promise<{ ok: boolean; modo: ModoAcceso }>;
+    }),
+
+  entrarDemo: () =>
+    fetch("/api/acceso/demo", { method: "POST" }).then(async (r) => {
+      if (!r.ok) throw new Error("El demo no está disponible.");
+      return r.json() as Promise<{ ok: boolean; modo: ModoAcceso }>;
+    }),
+
+  salir: () => fetch("/api/acceso/salir", { method: "POST" }).then((r) => r.json()),
 
   providers: (refresh = false) =>
     fetch(`/api/providers?refresh=${refresh}`).then((r) => json<Provider[]>(r)),
