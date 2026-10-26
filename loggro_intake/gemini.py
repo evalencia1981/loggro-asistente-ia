@@ -2,7 +2,7 @@
 loggro_intake.gemini — Cliente mínimo de Google Gemini (structured outputs vía REST).
 
 Helper compartido por el extractor de imágenes y el chat. Usa el free tier de Gemini;
-requiere GEMINI_API_KEY en el entorno. Modelo por defecto: gemini-2.5-flash
+requiere GEMINI_API_KEY en el entorno. Modelo por defecto: gemini-3.5-flash
 (gemini-2.0-flash tiene el free tier en 0 en algunas cuentas). Reintenta ante
 503/429/5xx ("high demand"), que Gemini devuelve de forma intermitente.
 """
@@ -14,10 +14,13 @@ import time
 
 import requests
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+# Los 2.5 ya no se habilitan en proyectos nuevos (404 "no longer available to
+# new users", oct-2026). gemini-3.5-flash es el que respondió bien y rápido con
+# JSON estructurado en un proyecto nuevo de nivel gratuito.
+DEFAULT_MODEL = "gemini-3.5-flash"
 # Modelos de respaldo: si el principal se queda sin cuota diaria (429), se usa el
 # siguiente. El free tier tiene límite por modelo, así que esto da resiliencia.
-FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-flash-lite-latest"]
+FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
 _URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
@@ -56,10 +59,17 @@ def generar_json(parts: list[dict], schema: dict, model: str | None = None,
     for m in modelos:
         url = _URL.format(model=m)
         agotado = False
+        cuerpo = body
         for intento in range(3):
-            resp = requests.post(url, params={"key": api_key}, json=body, timeout=120)
+            resp = requests.post(url, params={"key": api_key}, json=cuerpo, timeout=120)
             if resp.ok:
                 break
+            if resp.status_code == 400 and "thinkingConfig" in cuerpo["generationConfig"]:
+                # Los modelos "lite" rechazan thinkingBudget=0 con un 400 genérico:
+                # se reintenta el mismo modelo sin esa opción.
+                cuerpo = {**body, "generationConfig": {
+                    k: v for k, v in body["generationConfig"].items() if k != "thinkingConfig"}}
+                continue
             if resp.status_code == 429:
                 # Cuota agotada para este modelo -> no esperar, pasar al siguiente.
                 hubo_429 = True
