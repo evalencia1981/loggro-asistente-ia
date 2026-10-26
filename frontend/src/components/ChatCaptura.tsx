@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { type ChatTurn } from "../api";
+import { unirResultados } from "../voz";
 
 // Resultado de un turno: el nuevo estado del documento + la respuesta del asistente
 // + el objeto crudo de la API (que se pasa al onResult del padre).
@@ -67,8 +68,7 @@ export default function ChatCaptura<E, R>({
     rec.interimResults = true;
     rec.continuous = true;
     rec.onresult = (e: any) => {
-      let session = "";
-      for (let i = 0; i < e.results.length; i++) session += e.results[i][0].transcript;
+      const session = unirResultados(e.results);
       const text = (accumRef.current ? accumRef.current + " " : "") + session;
       liveRef.current = text;
       setInput(text);

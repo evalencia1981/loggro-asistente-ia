@@ -68,6 +68,14 @@ def generar_json(parts: list[dict], schema: dict, model: str | None = None,
             if resp.status_code in (500, 502, 503, 504) and intento < 2:
                 time.sleep(2 * (intento + 1))  # 2s, 4s (saturación transitoria)
                 continue
+            if resp.status_code == 402:
+                # Proyecto de AI Studio en prepago sin saldo: no lo arregla reintentar
+                # ni cambiar de modelo, solo recargar o usar otra key.
+                raise RuntimeError(
+                    "Gemini se quedó sin créditos prepagados. Recarga saldo en "
+                    "https://aistudio.google.com (Billing del proyecto) o cambia "
+                    "GEMINI_API_KEY por la de un proyecto con saldo o en plan gratuito."
+                )
             raise RuntimeError(f"Gemini {resp.status_code}: {resp.text[:300]}")
         if resp is not None and resp.ok:
             break

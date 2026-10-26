@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type ChatResult, type ChatTurn, type Extraccion } from "../api";
+import { unirResultados } from "../voz";
 
 interface Props {
   // Se llama en cada turno con la factura actualizada (mismo contrato que onExtracted).
@@ -61,8 +62,7 @@ export default function ChatFactura({ onResult }: Props) {
     rec.interimResults = true;
     rec.continuous = true; // sigue escuchando aunque haya pausas
     rec.onresult = (e: any) => {
-      let session = "";
-      for (let i = 0; i < e.results.length; i++) session += e.results[i][0].transcript;
+      const session = unirResultados(e.results);
       const text = (accumRef.current ? accumRef.current + " " : "") + session;
       liveRef.current = text;
       setInput(text);
