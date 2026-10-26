@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type Rol, type Usuario } from "../api";
+import { api, type Modulo, type Rol, type Usuario } from "../api";
 
 const MODULO_NOMBRE: Record<string, string> = {
   compras: "Compras",
@@ -40,6 +40,8 @@ function fecha(iso: string | null): string {
 export default function UsuariosView({ yo }: { yo: string | null }) {
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
   const [roles, setRoles] = useState<Rol[]>([]);
+  const [asignables, setAsignables] = useState<Modulo[]>([]);
+  const [guardandoRol, setGuardandoRol] = useState<string | null>(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
@@ -55,6 +57,7 @@ export default function UsuariosView({ yo }: { yo: string | null }) {
       .then((d) => {
         setUsuarios(d.usuarios);
         setRoles(d.roles);
+        setAsignables(d.modulos_asignables);
       })
       .catch((e) => setError(mensaje(e)))
       .finally(() => setCargando(false));
@@ -64,6 +67,28 @@ export default function UsuariosView({ yo }: { yo: string | null }) {
   }, []);
 
   const rolNombre = (id: string) => roles.find((r) => r.id === id)?.nombre ?? id;
+
+  async function alternarModulo(r: Rol, m: Modulo) {
+    const modulos = r.modulos.includes(m) ? r.modulos.filter((x) => x !== m) : [...r.modulos, m];
+    setError(null);
+    setAviso(null);
+    setGuardandoRol(r.id);
+    // Se pinta de una vez; si el backend falla se recarga lo que quedó guardado.
+    setRoles((rs) => rs.map((x) => (x.id === r.id ? { ...x, modulos } : x)));
+    try {
+      const res = await api.cambiarRol(r.id, modulos);
+      setRoles((rs) => rs.map((x) => (x.id === r.id ? { ...x, modulos: res.modulos } : x)));
+      setAviso(
+        `${r.nombre}: ${MODULO_NOMBRE[m]} ${modulos.includes(m) ? "activado" : "desactivado"}. ` +
+          "Aplica de inmediato; quien ya esté adentro ve las pestañas nuevas al recargar."
+      );
+    } catch (e) {
+      setError(mensaje(e));
+      await cargar();
+    } finally {
+      setGuardandoRol(null);
+    }
+  }
 
   async function crear(e: React.FormEvent) {
     e.preventDefault();
@@ -111,12 +136,35 @@ export default function UsuariosView({ yo }: { yo: string | null }) {
           <div key={r.id} className="rounded-2xl border border-espresso-700 bg-espresso-900/50 p-4 shadow-panel">
             <p className="font-display text-base font-semibold text-sand-50">{r.nombre}</p>
             <p className="mt-1 text-xs leading-relaxed text-sand-500">{r.ayuda}</p>
-            <div className="mt-3 flex flex-wrap gap-1">
-              {r.modulos.map((m) => (
-                <span key={m} className="rounded-full border border-espresso-600 px-2 py-0.5 text-[10px] text-sand-300">
-                  {MODULO_NOMBRE[m] ?? m}
-                </span>
-              ))}
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {r.editable
+                ? asignables.map((m) => {
+                    const activo = r.modulos.includes(m);
+                    return (
+                      <button
+                        key={m}
+                        type="button"
+                        role="switch"
+                        aria-checked={activo}
+                        disabled={guardandoRol === r.id}
+                        onClick={() => alternarModulo(r, m)}
+                        title={activo ? "Clic para quitarlo" : "Clic para darle acceso"}
+                        className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-60 ${
+                          activo
+                            ? "border-amber/60 bg-amber/15 text-amber-bright"
+                            : "border-espresso-600 text-sand-500 line-through decoration-sand-500/40 hover:border-amber/40 hover:text-sand-300"
+                        }`}
+                      >
+                        {activo ? "✓ " : ""}
+                        {MODULO_NOMBRE[m] ?? m}
+                      </button>
+                    );
+                  })
+                : r.modulos.map((m) => (
+                    <span key={m} className="rounded-full border border-espresso-600 px-2 py-0.5 text-[10px] text-sand-300">
+                      {MODULO_NOMBRE[m] ?? m}
+                    </span>
+                  ))}
             </div>
           </div>
         ))}

@@ -384,6 +384,7 @@ export interface Rol {
   nombre: string;
   ayuda: string;
   modulos: Modulo[];
+  editable: boolean; // el dueño no se edita: siempre lo tiene todo
 }
 
 /** Evento que dispara cualquier 401: la cookie venció o nunca hubo sesión. */
@@ -441,7 +442,17 @@ export const api = {
     }),
 
   // ---- Usuarios (solo dueño) ----
-  usuarios: () => fetch("/api/usuarios").then((r) => json<{ usuarios: Usuario[]; roles: Rol[] }>(r)),
+  usuarios: () =>
+    fetch("/api/usuarios").then((r) =>
+      json<{ usuarios: Usuario[]; roles: Rol[]; modulos_asignables: Modulo[] }>(r)
+    ),
+
+  cambiarRol: (rol: string, modulos: Modulo[]) =>
+    fetch(`/api/usuarios/roles/${encodeURIComponent(rol)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modulos }),
+    }).then((r) => json<{ id: string; modulos: Modulo[] }>(r)),
 
   crearUsuario: (args: { usuario: string; nombre: string; rol: string; clave: string }) =>
     fetch("/api/usuarios", {

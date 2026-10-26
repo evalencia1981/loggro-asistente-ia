@@ -14,8 +14,12 @@ Estructura (usuarios.json o la clave "usuarios" del KV):
       "sesion": 3,                      # sube al cambiar clave/rol o desactivar
       "creado": "2026-10-26T…", "ultimo_ingreso": "2026-10-26T…"
     }
-  }
+  },
+  "roles": {"admin": ["compras", "stock", …]}   # módulos elegidos por el dueño
 }
+
+`roles` solo guarda lo que el dueño cambió; un rol que no aparece usa los
+módulos por defecto de acceso.ROLES.
 
 Por qué `sesion`: la cookie dura 30 días y está firmada, así que sin algo que
 la invalide, desactivar a alguien no lo sacaría hasta que venza. Cada token
@@ -55,7 +59,7 @@ _cache: dict[str, Any] = {"t": 0.0, "data": None}
 
 
 def _empty() -> dict[str, Any]:
-    return {"version": 1, "items": {}}
+    return {"version": 1, "items": {}, "roles": {}}
 
 
 def _ahora() -> str:
@@ -101,6 +105,8 @@ def cargar(usar_cache: bool = False) -> dict[str, Any]:
             data = _archivo()
     if not isinstance(data, dict) or not isinstance(data.get("items"), dict):
         data = _empty()
+    if not isinstance(data.get("roles"), dict):
+        data["roles"] = {}
     _cache.update(t=time.time(), data=data)
     return data
 
@@ -230,3 +236,19 @@ def registrar_ingreso(usuario: str) -> None:
             guardar(data)
     except Exception as e:
         print(f"[usuarios] no se pudo registrar el ingreso ({e}).")
+
+
+# --------------------------------------------------------------------------- #
+# Módulos por rol (los elige el dueño)
+# --------------------------------------------------------------------------- #
+def modulos_de_rol(rol: str, usar_cache: bool = False) -> list[str] | None:
+    """Módulos que el dueño eligió para el rol, o None si usa los de por defecto."""
+    v = cargar(usar_cache)["roles"].get(rol)
+    return list(v) if isinstance(v, list) else None
+
+
+def guardar_modulos_de_rol(rol: str, modulos: list[str]) -> list[str]:
+    data = cargar()
+    data["roles"][rol] = list(modulos)
+    guardar(data)
+    return list(modulos)

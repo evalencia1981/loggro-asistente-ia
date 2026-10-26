@@ -50,13 +50,31 @@ MODULOS = ("compras", "inventario", "stock", "gastos", "cartera", "utilidad", "u
 
 ROLES: dict[str, dict] = {
     "dueno": {"nombre": "Dueño", "modulos": MODULOS,
-              "ayuda": "Todo, incluida la utilidad y la administración de usuarios."},
+              "ayuda": "Siempre ve todo, incluida la administración de usuarios."},
     "admin": {"nombre": "Administrador",
               "modulos": ("compras", "inventario", "stock", "gastos", "cartera"),
-              "ayuda": "Operación completa sin utilidad ni usuarios."},
+              "ayuda": "Encargado del negocio. Tú eliges qué módulos ve."},
     "bodega": {"nombre": "Bodega / Barra", "modulos": ("compras", "inventario", "stock"),
-               "ayuda": "Compras, movimientos de inventario y stock. No ve gastos, cartera ni utilidad."},
+               "ayuda": "Personal de barra y bodega. Tú eliges qué módulos ve."},
 }
+# Los módulos de cada rol (menos el dueño) los puede cambiar el dueño desde la
+# pantalla de Usuarios; lo de arriba es el valor por defecto. "usuarios" nunca
+# se le puede dar a otro rol: quien maneja usuarios podría hacerse dueño.
+ROLES_FIJOS = ("dueno",)
+MODULOS_ASIGNABLES = tuple(m for m in MODULOS if m != "usuarios")
+
+
+def modulos_de_rol(rol: str, usar_cache: bool = True) -> list[str]:
+    """Módulos vigentes del rol: los elegidos por el dueño o los de por defecto."""
+    if rol in ROLES_FIJOS:
+        return list(ROLES[rol]["modulos"])
+    import usuarios_store  # import diferido: acceso.py no debe exigir el KV para cargar
+    elegidos = usuarios_store.modulos_de_rol(rol, usar_cache=usar_cache)
+    base = elegidos if elegidos is not None else ROLES[rol]["modulos"]
+    # Orden de MODULOS (así salen las pestañas) y nunca "usuarios".
+    return [m for m in MODULOS_ASIGNABLES if m in base]
+
+
 # El demo enseña todo menos la administración, y en solo lectura.
 MODULOS_DEMO = tuple(m for m in MODULOS if m != "usuarios")
 
@@ -176,9 +194,9 @@ def sesion_de_token(token: str | None) -> dict | None:
     if (u is None or not u.get("activo", True) or u.get("sesion") != datos.get("s")
             or u.get("rol") not in ROLES):
         return None
-    rol = ROLES[u["rol"]]
     return {"modo": MODO_DUENO, "usuario": usuario, "nombre": u.get("nombre") or usuario,
-            "rol": u["rol"], "rol_nombre": rol["nombre"], "modulos": list(rol["modulos"])}
+            "rol": u["rol"], "rol_nombre": ROLES[u["rol"]]["nombre"],
+            "modulos": modulos_de_rol(u["rol"])}
 
 
 def verificar_codigo(codigo: str) -> str | None:

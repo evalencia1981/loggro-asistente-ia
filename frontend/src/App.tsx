@@ -359,7 +359,12 @@ function Consola({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }) {
         </div>
       </div>
 
-      {vista === "usuarios" ? (
+      {sesion.modulos.length === 0 ? (
+        <p className="mt-8 rounded-xl border border-espresso-700 bg-espresso-900/50 px-4 py-6 text-center text-sm text-sand-400">
+          Tu rol ({sesion.rol_nombre}) todavía no tiene módulos asignados. Pídele al dueño que te
+          dé acceso.
+        </p>
+      ) : vista === "usuarios" ? (
         <div className="mt-8">
           <UsuariosView yo={sesion.usuario} />
         </div>

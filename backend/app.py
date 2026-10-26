@@ -245,8 +245,31 @@ def listar_usuarios():
     return {
         "usuarios": usuarios_store.listar(),
         "roles": [{"id": k, "nombre": v["nombre"], "ayuda": v["ayuda"],
-                   "modulos": list(v["modulos"])} for k, v in acceso.ROLES.items()],
+                   "modulos": acceso.modulos_de_rol(k, usar_cache=False),
+                   "editable": k not in acceso.ROLES_FIJOS} for k, v in acceso.ROLES.items()],
+        "modulos_asignables": list(acceso.MODULOS_ASIGNABLES),
     }
+
+
+class RolCambio(BaseModel):
+    modulos: list[str]
+
+
+@app.put("/api/usuarios/roles/{rol}")
+def cambiar_modulos_rol(rol: str, req: RolCambio):
+    """El dueño elige qué módulos ve un rol. Aplica en la siguiente petición de
+    quienes tengan ese rol (los módulos no van en la cookie)."""
+    _validar_rol(rol)
+    if rol in acceso.ROLES_FIJOS:
+        raise HTTPException(400, "El rol Dueño siempre tiene todos los módulos.")
+    desconocidos = [m for m in req.modulos if m not in acceso.MODULOS_ASIGNABLES]
+    if desconocidos:
+        raise HTTPException(400, f"Módulos no asignables: {', '.join(desconocidos)}")
+    try:
+        usuarios_store.guardar_modulos_de_rol(rol, req.modulos)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    return {"id": rol, "modulos": acceso.modulos_de_rol(rol, usar_cache=False)}
 
 
 @app.post("/api/usuarios")
