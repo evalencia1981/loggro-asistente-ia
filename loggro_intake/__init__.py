@@ -18,6 +18,7 @@ from .extractor import extraer_tirilla, extraer_imagen
 from .chat import conversar, conversar_doc, CHAT_SCHEMA
 from . import gasto
 from .gasto import GASTO_SCHEMA, extraer_gasto, conversar_gasto
+from .lista import LISTA_SCHEMA, extraer_lista_texto, extraer_lista_imagen
 
 __all__ = [
     "FACTURA_SCHEMA",
@@ -31,4 +32,7 @@ __all__ = [
     "gasto",
     "extraer_gasto",
     "conversar_gasto",
+    "LISTA_SCHEMA",
+    "extraer_lista_texto",
+    "extraer_lista_imagen",
 ]

@@ -48,6 +48,11 @@ TIPO_COMPRA_NOMBRE = "Entrada - Compra"
 # Se puede sobreescribir con la variable de entorno LOGGRO_LOCATION_STOCK.
 LOCATION_STOCK_ID = os.getenv("LOGGRO_LOCATION_STOCK", "67c398d9be2bbaa69edebdf3")
 
+# Segundo host de PirPos (API Gateway de AWS): kardex, pagos de crédito y otras
+# rutas "serverless". Es la constante URL_API_GATEWAY de restobar.loggro.com/config.js.
+URL_SERVERLESS = os.getenv("LOGGRO_SERVERLESS_URL",
+                           "https://xkzlhaq4o9.execute-api.us-east-1.amazonaws.com/prod/")
+
 
 # --------------------------------------------------------------------------- #
 # Cliente HTTP
@@ -231,6 +236,47 @@ class LoggroClient:
             page += 1
             if not filas or len(todas) >= total:
                 return todas
+
+    # -- existencias y kardex -------------------------------------------------
+    # CONFIRMADO contra Virus pub (2026-10-23) leyendo la web de Loggro
+    # (ingredientService.js + inventoryHistoryService.js):
+    #   * GET /ingredients = todo lo que lleva inventario: productos "PerUnit"/"Mixed"
+    #     de la carta + los ingredientes puros (isIngredient, con `unit`: Onz, ml…)
+    #     que NO salen en GET /products. Los tragos con receta no están: descuentan
+    #     de sus ingredientes.
+    #   * El kardex vive en OTRO host (URL_SERVERLESS de la web): cada venta, pedido,
+    #     compra o ajuste deja un log por ingrediente con `currentStock` = stock
+    #     DESPUÉS del movimiento. El signo de `quantity` no es uniforme entre tipos.
+    def get_inventory_items(self) -> list[dict]:
+        """GET /ingredients -> productos e ingredientes que controlan inventario."""
+        data = self._get("/ingredients")
+        return data.get("data", data) if isinstance(data, dict) else data
+
+    def get_inventory_logs(self, start_iso: str, end_iso: str, limit: int = 500) -> list[dict]:
+        """Kardex del rango: GET {URL_SERVERLESS}log-inventories/history (pagina todo).
+
+        Cada log: {type, product, ingredient, ingredientName, quantity, currentStock,
+        avgCost, createdOn, order?}. Tipos vistos: FACTURACION, PEDIDO_INTERNO,
+        PEDIDO_CORTESIA, ENTRADA_COMPRA, ENTRADA_AJUSTE, INVENTARIO_A_CERO.
+        """
+        if not self.token:
+            self.login()
+        todos: list[dict] = []
+        page = 0
+        while True:
+            r = self.s.get(f"{URL_SERVERLESS}log-inventories/history", timeout=self.timeout * 2,
+                           params={"startDate": start_iso, "endDate": end_iso,
+                                   "limit": limit, "page": page})
+            if r.status_code == 401:
+                self.login()
+                continue
+            r.raise_for_status()
+            data = r.json()
+            filas = data.get("productLogs") or []
+            todos.extend(filas)
+            page += 1
+            if not filas or len(todos) >= int(data.get("count") or 0):
+                return todos
 
     def register_payment(self, payload: dict) -> dict:
         """POST /inventories/payments  (RUTA POR CONFIRMAR: guardarpagoinventario)."""

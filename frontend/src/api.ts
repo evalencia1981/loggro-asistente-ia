@@ -251,13 +251,139 @@ export interface CarteraResult {
 }
 
 // ---- Acceso ----
+// ---- Otros movimientos de inventario ----
+export interface TipoInventario {
+  id: number;
+  nombre: string;
+  resta: boolean;
+  costo: "compra" | "promedio" | "usuario";
+  ayuda: string;
+}
+
+export interface StockBodega {
+  stock: number;
+  avgCost: number;
+  pricePurchase: number;
+}
+
+export interface LineaLista {
+  descripcion: string;
+  cantidad: number;
+  costo_unitario: number;
+  product_id: string | null;
+  product_name: string | null;
+  origen: "aprendido" | "ia" | "parecido" | null;
+  stock_actual: number | null;
+}
+
+export interface ListaLeida {
+  fecha: string | null;
+  nota: string;
+  items: LineaLista[];
+}
+
+export interface MovimientoCreado {
+  movement_id: string | null;
+  tipo: number;
+  tipo_nombre: string;
+  items: number;
+  total: number | null;
+}
+
+export interface DiferenciaConteo {
+  product_id: string;
+  nombre: string;
+  stock_sistema: number;
+  contado: number;
+  diferencia: number;
+  costo_unitario: number;
+}
+
+export interface CrearInventarioResult {
+  ok: boolean;
+  movimientos: MovimientoCreado[];
+  diferencias?: DiferenciaConteo[];
+  sin_cambio?: number;
+}
+
+// ---- Existencias y pedido ----
+export type EstadoExistencia = "agotado" | "bajo" | "alcanza_poco" | "ok" | "sin_movimiento";
+
+export interface FilaExistencia {
+  id: string;
+  nombre: string;
+  categoria: string;
+  es_ingrediente: boolean;
+  unidad: string;
+  inicial: number; // stock al inicio del periodo, reconstruido con el kardex
+  compras: number;
+  consumo: number; // ventas + pedidos internos + cortesías
+  ajustes: number; // ajustes, inventario a cero… (con signo)
+  actual: number;
+  minimo: number;
+  consumo_diario: number;
+  dias_alcanza: number | null;
+  pedir: number;
+  costo_unitario: number;
+  costo_pedido: number;
+  estado: EstadoExistencia;
+  proveedor: string; // el de la última compra registrada
+  ultima_compra: string | null;
+  movimientos: number;
+}
+
+export interface ExistenciasResult {
+  desde: string;
+  hasta: string;
+  dias: number;
+  cobertura: number;
+  resumen: {
+    items: number;
+    agotados: number;
+    bajos: number;
+    negativos: number;
+    por_pedir: number;
+    costo_pedido: number;
+  };
+  filas: FilaExistencia[];
+}
+
 export type ModoAcceso = "dueno" | "demo";
+
+export type Modulo = "compras" | "inventario" | "stock" | "gastos" | "cartera" | "utilidad" | "usuarios";
+
+/** Quién está adentro y qué módulos puede ver (lo decide el backend, acceso.py). */
+export interface Sesion {
+  modo: ModoAcceso;
+  usuario: string | null; // null = código maestro o demo
+  nombre: string;
+  rol: string;
+  rol_nombre: string;
+  modulos: Modulo[];
+}
 
 export interface EstadoAcceso {
   dentro: boolean;
   modo: ModoAcceso | null;
+  sesion: Sesion | null;
   configurado: boolean;
   demo_disponible: boolean;
+}
+
+export interface Usuario {
+  usuario: string;
+  nombre: string;
+  rol: string;
+  activo: boolean;
+  creado: string | null;
+  ultimo_ingreso: string | null;
+}
+
+export interface Rol {
+  id: string;
+  nombre: string;
+  ayuda: string;
+  modulos: Modulo[];
 }
 
 /** Evento que dispara cualquier 401: la cookie venció o nunca hubo sesión. */
@@ -271,10 +397,17 @@ async function json<T>(res: Response): Promise<T> {
     // errores sueltos en vez de pedir el código otra vez.
     if (res.status === 401) {
       window.dispatchEvent(new CustomEvent(EVENTO_SIN_ACCESO));
-      throw new Error("Se necesita un código de acceso.");
+      throw new Error("Se necesita iniciar sesión.");
     }
     if (res.status === 403) {
-      throw new Error("El modo demo es de solo lectura: no escribe en Loggro.");
+      // Demo (solo lectura) o un módulo que el rol no tiene: el backend dice cuál.
+      let detalle = "";
+      try {
+        detalle = JSON.parse(text).detail;
+      } catch {
+        /* respuesta sin JSON */
+      }
+      throw new Error(detalle || "No tienes permiso para esta acción.");
     }
     throw new Error(`${res.status}: ${text.slice(0, 200)}`);
   }
@@ -287,24 +420,45 @@ export const api = {
   // ---- Acceso ----
   acceso: () => fetch("/api/acceso").then((r) => json<EstadoAcceso>(r)),
 
-  entrar: (codigo: string) =>
+  /** usuario vacío = la clave es el código maestro. */
+  entrar: (usuario: string, clave: string) =>
     fetch("/api/acceso", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ codigo }),
+      body: JSON.stringify({ usuario, clave }),
     }).then(async (r) => {
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
         throw new Error(d.detail || "No se pudo entrar.");
       }
-      return r.json() as Promise<{ ok: boolean; modo: ModoAcceso }>;
+      return r.json() as Promise<{ ok: boolean; sesion: Sesion }>;
     }),
 
   entrarDemo: () =>
     fetch("/api/acceso/demo", { method: "POST" }).then(async (r) => {
       if (!r.ok) throw new Error("El demo no está disponible.");
-      return r.json() as Promise<{ ok: boolean; modo: ModoAcceso }>;
+      return r.json() as Promise<{ ok: boolean; sesion: Sesion }>;
     }),
+
+  // ---- Usuarios (solo dueño) ----
+  usuarios: () => fetch("/api/usuarios").then((r) => json<{ usuarios: Usuario[]; roles: Rol[] }>(r)),
+
+  crearUsuario: (args: { usuario: string; nombre: string; rol: string; clave: string }) =>
+    fetch("/api/usuarios", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    }).then((r) => json<Usuario>(r)),
+
+  cambiarUsuario: (
+    usuario: string,
+    cambios: { nombre?: string; rol?: string; activo?: boolean; clave?: string }
+  ) =>
+    fetch(`/api/usuarios/${encodeURIComponent(usuario)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cambios),
+    }).then((r) => json<Usuario>(r)),
 
   salir: () => fetch("/api/acceso/salir", { method: "POST" }).then((r) => r.json()),
 
@@ -476,6 +630,47 @@ export const api = {
     const q = qs.toString();
     return fetch(`/api/utilidad${q ? `?${q}` : ""}`).then((r) => json<UtilidadResult>(r));
   },
+
+  // ---- Inventario (ajustes, mermas, conteo físico) ----
+  inventarioTipos: () => fetch("/api/inventario/tipos").then((r) => json<TipoInventario[]>(r)),
+
+  inventarioStock: (ids: string[]) =>
+    fetch(`/api/inventario/stock?ids=${encodeURIComponent(ids.join(","))}`).then((r) =>
+      json<Record<string, StockBodega>>(r)
+    ),
+
+  existencias: (args: { dias: number; cobertura: number }) =>
+    fetch(`/api/inventario/existencias?dias=${args.dias}&cobertura=${args.cobertura}`).then((r) =>
+      json<ExistenciasResult>(r)
+    ),
+
+  inventarioListaTexto: (texto: string) =>
+    fetch("/api/inventario/lista/texto", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texto }),
+    }).then((r) => json<ListaLeida>(r)),
+
+  inventarioListaImagen: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return fetch("/api/inventario/lista/imagen", { method: "POST", body: fd }).then((r) =>
+      json<ListaLeida>(r)
+    );
+  },
+
+  /** tipo = id de Loggro ("3", "6"…) o "conteo" (cantidad = lo contado). */
+  crearInventario: (args: {
+    tipo: string;
+    fecha?: string | null;
+    nota?: string;
+    items: { descripcion: string; product_id: string; cantidad: number; costo_unitario?: number | null }[];
+  }) =>
+    fetch("/api/inventario/movimiento", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    }).then((r) => json<CrearInventarioResult>(r)),
 
   sugerenciasRecurrentes: (dias = 180) =>
     fetch(`/api/gastos/recurrentes/sugerencias?dias=${dias}`).then((r) =>

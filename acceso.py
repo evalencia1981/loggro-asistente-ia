@@ -6,9 +6,14 @@ Por qué existe: hasta ahora cualquiera con la URL podía leer la cartera
 negocio) y, peor, crear gastos y movimientos reales en Loggro. No había ninguna
 validación antes de los handlers.
 
-Modelo: un código compartido, sin usuarios ni contraseñas por persona. Cuando el
-código es correcto se entrega una cookie firmada; la cookie es lo que viaja en
-cada petición, no el código.
+Modelo: usuarios con contraseña y un rol (usuarios_store.py), más el código
+compartido ACCESO_CODIGO como llave maestra del dueño (sirve para entrar la
+primera vez y crear los usuarios, y para no quedar nunca por fuera). Al entrar
+se entrega una cookie firmada; la cookie es lo que viaja en cada petición.
+
+Roles: cada uno ve unos módulos (ROLES). El middleware traduce la ruta pedida a
+su módulo (RUTAS_MODULO) y rechaza con 403 lo que el rol no tiene. Esconder
+pestañas en el frontend es solo comodidad.
 
 Modos previstos:
   * "dueno" -> datos reales, lectura y escritura.
@@ -37,6 +42,46 @@ DURACION = 30 * 24 * 3600  # 30 días
 
 MODO_DUENO = "dueno"
 MODO_DEMO = "demo"
+
+# --------------------------------------------------------------------------- #
+# Roles y módulos
+# --------------------------------------------------------------------------- #
+MODULOS = ("compras", "inventario", "stock", "gastos", "cartera", "utilidad", "usuarios")
+
+ROLES: dict[str, dict] = {
+    "dueno": {"nombre": "Dueño", "modulos": MODULOS,
+              "ayuda": "Todo, incluida la utilidad y la administración de usuarios."},
+    "admin": {"nombre": "Administrador",
+              "modulos": ("compras", "inventario", "stock", "gastos", "cartera"),
+              "ayuda": "Operación completa sin utilidad ni usuarios."},
+    "bodega": {"nombre": "Bodega / Barra", "modulos": ("compras", "inventario", "stock"),
+               "ayuda": "Compras, movimientos de inventario y stock. No ve gastos, cartera ni utilidad."},
+}
+# El demo enseña todo menos la administración, y en solo lectura.
+MODULOS_DEMO = tuple(m for m in MODULOS if m != "usuarios")
+
+# Prefijo de ruta -> módulo. Gana el primero que coincida (lo específico va antes).
+# Lo que no está aquí (productos, proveedores, homologación, caché) es común a
+# cualquier sesión válida: lo usan varias pantallas.
+RUTAS_MODULO: tuple[tuple[str, str], ...] = (
+    ("/api/inventario/existencias", "stock"),
+    ("/api/inventario", "inventario"),
+    ("/api/extraer", "compras"),
+    ("/api/chat", "compras"),
+    ("/api/movimiento", "compras"),
+    ("/api/gastos", "gastos"),
+    ("/api/creditos", "cartera"),
+    ("/api/utilidad", "utilidad"),
+    ("/api/usuarios", "usuarios"),
+)
+
+
+def modulo_de_ruta(path: str) -> str | None:
+    for prefijo, modulo in RUTAS_MODULO:
+        if path == prefijo or path.startswith(prefijo + "/"):
+            return modulo
+    return None
+
 
 # Un código corto se adivina a fuerza bruta. No es una contraseña de usuario:
 # es un secreto compartido, así que puede (y debe) ser largo.
@@ -80,16 +125,21 @@ def _firmar(payload: str) -> str:
     ).decode().rstrip("=")
 
 
-def crear_token(modo: str) -> str:
-    """Token firmado: <payload_b64>.<firma>. No lleva el código adentro."""
-    payload = json.dumps({"modo": modo, "exp": int(time.time()) + DURACION},
-                         separators=(",", ":"))
+def crear_token(modo: str, usuario: str | None = None, sesion: int | None = None) -> str:
+    """Token firmado: <payload_b64>.<firma>. No lleva el código ni la clave adentro.
+
+    Con `usuario`, el rol NO va en el token: se lee del almacén en cada petición,
+    para que un cambio de rol aplique sin esperar a que venza la cookie.
+    """
+    datos: dict = {"modo": modo, "exp": int(time.time()) + DURACION}
+    if usuario:
+        datos.update(u=usuario, s=sesion)
+    payload = json.dumps(datos, separators=(",", ":"))
     p64 = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
     return f"{p64}.{_firmar(p64)}"
 
 
-def modo_de_token(token: str | None) -> str | None:
-    """Modo que acredita el token, o None si es inválido, ajeno o vencido."""
+def _datos_de_token(token: str | None) -> dict | None:
     if not token or "." not in token:
         return None
     p64, firma = token.rsplit(".", 1)
@@ -102,8 +152,33 @@ def modo_de_token(token: str | None) -> str | None:
         return None
     if datos.get("exp", 0) < time.time():
         return None
-    modo = datos.get("modo")
-    return modo if modo in (MODO_DUENO, MODO_DEMO) else None
+    return datos if datos.get("modo") in (MODO_DUENO, MODO_DEMO) else None
+
+
+def sesion_de_token(token: str | None) -> dict | None:
+    """Quién es y qué puede ver, o None si el token es inválido, vencido o revocado.
+
+    -> {modo, usuario, nombre, rol, rol_nombre, modulos}
+    """
+    datos = _datos_de_token(token)
+    if not datos:
+        return None
+    if datos["modo"] == MODO_DEMO:
+        return {"modo": MODO_DEMO, "usuario": None, "nombre": "Demo", "rol": "demo",
+                "rol_nombre": "Demo", "modulos": list(MODULOS_DEMO)}
+    usuario = datos.get("u")
+    if not usuario:  # entró con el código maestro
+        return {"modo": MODO_DUENO, "usuario": None, "nombre": "Código maestro",
+                "rol": "dueno", "rol_nombre": ROLES["dueno"]["nombre"],
+                "modulos": list(MODULOS)}
+    import usuarios_store  # import diferido: acceso.py no debe exigir el KV para cargar
+    u = usuarios_store.obtener(usuario, usar_cache=True)
+    if (u is None or not u.get("activo", True) or u.get("sesion") != datos.get("s")
+            or u.get("rol") not in ROLES):
+        return None
+    rol = ROLES[u["rol"]]
+    return {"modo": MODO_DUENO, "usuario": usuario, "nombre": u.get("nombre") or usuario,
+            "rol": u["rol"], "rol_nombre": rol["nombre"], "modulos": list(rol["modulos"])}
 
 
 def verificar_codigo(codigo: str) -> str | None:

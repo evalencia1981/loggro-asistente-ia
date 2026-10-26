@@ -34,7 +34,10 @@ import loggro_intake  # noqa: E402  (extractor + chat reutilizables)
 import informe_creditos  # noqa: E402  (agrupación de cartera, compartida con el CSV)
 import recurrentes_store  # noqa: E402  (beneficiarios recurrentes de gastos)
 import informe_utilidad  # noqa: E402  (utilidad: ventas vs compras+gastos)
-import acceso  # noqa: E402  (puerta de acceso por código)
+import movimientos_inventario as mov_inv  # noqa: E402  (ajustes, mermas, conteo físico)
+import informe_stock  # noqa: E402  (existencias y sugerido de pedido)
+import acceso  # noqa: E402  (puerta de acceso: usuarios, roles, código maestro)
+import usuarios_store  # noqa: E402  (usuarios con contraseña y rol)
 from backend.catalogo_api import router as catalogo_router  # noqa: E402
 
 # /docs y /openapi.json enumeran todos los endpoints y sus payloads: es un mapa
@@ -100,26 +103,48 @@ async def puerta_de_acceso(request: Request, call_next):
         )
 
     # El header sirve para scripts y curl; la cookie, para el navegador.
-    modo = acceso.modo_de_token(
-        request.headers.get("X-Acceso") or request.cookies.get(acceso.COOKIE)
-    )
-    if not modo:
-        return JSONResponse({"detail": "Se necesita un código de acceso.",
+    sesion = acceso.sesion_de_token(_token(request))
+    if not sesion:
+        return JSONResponse({"detail": "Se necesita iniciar sesión.",
                              "codigo_requerido": True}, status_code=401)
+    modo = sesion["modo"]
 
     if modo == acceso.MODO_DEMO and request.method in acceso.ESCRITURA:
         return JSONResponse(
             {"detail": "El modo demo es de solo lectura: no escribe en Loggro.",
              "modo": modo}, status_code=403)
 
+    modulo = acceso.modulo_de_ruta(ruta)
+    if modulo and modulo not in sesion["modulos"]:
+        return JSONResponse(
+            {"detail": f"Tu rol ({sesion['rol_nombre']}) no tiene acceso a {modulo}.",
+             "modulo": modulo}, status_code=403)
+
     request.state.modo = modo
+    request.state.sesion = sesion
     respuesta = await call_next(request)
     respuesta.headers["X-Modo"] = modo
     return respuesta
 
 
+def _token(request: Request) -> str | None:
+    return request.headers.get("X-Acceso") or request.cookies.get(acceso.COOKIE)
+
+
+def _poner_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        acceso.COOKIE, token,
+        max_age=acceso.DURACION,
+        httponly=True,            # que el JS de la página no pueda leerla
+        secure=_EN_VERCEL,        # en local se sirve por http
+        samesite="lax",
+    )
+
+
 class AccesoRequest(BaseModel):
-    codigo: str
+    usuario: str = ""  # vacío = la clave es el código maestro
+    clave: str = ""
+    codigo: str = ""   # compatibilidad con el login anterior (solo código)
 
 
 def _ip(request: Request) -> str:
@@ -130,13 +155,12 @@ def _ip(request: Request) -> str:
 
 @app.get("/api/acceso")
 def estado_acceso(request: Request):
-    """¿Esta sesión ya está adentro, y en qué modo? Lo consulta la pantalla de entrada."""
-    modo = acceso.modo_de_token(
-        request.headers.get("X-Acceso") or request.cookies.get(acceso.COOKIE)
-    )
+    """¿Esta sesión ya está adentro, quién es y qué módulos ve?"""
+    sesion = acceso.sesion_de_token(_token(request))
     return {
-        "dentro": bool(modo),
-        "modo": modo,
+        "dentro": bool(sesion),
+        "modo": sesion["modo"] if sesion else None,
+        "sesion": sesion,
         "configurado": acceso.configurado(),
         "demo_disponible": bool(os.getenv("ACCESO_CODIGO_DEMO")),
     }
@@ -144,7 +168,7 @@ def estado_acceso(request: Request):
 
 @app.post("/api/acceso")
 def entrar(req: AccesoRequest, request: Request, response: Response):
-    """Cambia un código por una cookie firmada."""
+    """Usuario + contraseña (o el código maestro) -> cookie firmada."""
     if not acceso.configurado():
         raise HTTPException(503, "El acceso no está configurado: falta ACCESO_CODIGO.")
 
@@ -152,20 +176,25 @@ def entrar(req: AccesoRequest, request: Request, response: Response):
     if acceso.bloqueado(ip):
         raise HTTPException(429, "Demasiados intentos. Espera unos minutos.")
 
-    modo = acceso.verificar_codigo(req.codigo)
-    if not modo:
-        acceso.intento_fallido(ip)
-        raise HTTPException(401, "Código incorrecto.")
+    usuario = req.usuario.strip()
+    if usuario:
+        hallado = usuarios_store.verificar(usuario, req.clave)
+        if not hallado:
+            acceso.intento_fallido(ip)
+            raise HTTPException(401, "Usuario o contraseña incorrectos.")
+        nombre_usuario, datos = hallado
+        token = acceso.crear_token(acceso.MODO_DUENO, nombre_usuario, datos.get("sesion"))
+        usuarios_store.registrar_ingreso(nombre_usuario)
+    else:
+        modo = acceso.verificar_codigo(req.clave or req.codigo)
+        if not modo:
+            acceso.intento_fallido(ip)
+            raise HTTPException(401, "Código incorrecto.")
+        token = acceso.crear_token(modo)
 
     acceso.limpiar_intentos(ip)
-    response.set_cookie(
-        acceso.COOKIE, acceso.crear_token(modo),
-        max_age=acceso.DURACION,
-        httponly=True,            # que el JS de la página no pueda leerla
-        secure=_EN_VERCEL,        # en local se sirve por http
-        samesite="lax",
-    )
-    return {"ok": True, "modo": modo}
+    _poner_cookie(response, token)
+    return {"ok": True, "sesion": acceso.sesion_de_token(token)}
 
 
 @app.post("/api/acceso/demo")
@@ -178,17 +207,76 @@ def entrar_demo(response: Response):
     """
     if not os.getenv("ACCESO_CODIGO_DEMO"):
         raise HTTPException(404, "El demo no está disponible.")
-    response.set_cookie(
-        acceso.COOKIE, acceso.crear_token(acceso.MODO_DEMO),
-        max_age=acceso.DURACION, httponly=True, secure=_EN_VERCEL, samesite="lax",
-    )
-    return {"ok": True, "modo": acceso.MODO_DEMO}
+    token = acceso.crear_token(acceso.MODO_DEMO)
+    _poner_cookie(response, token)
+    return {"ok": True, "sesion": acceso.sesion_de_token(token)}
 
 
 @app.post("/api/acceso/salir")
 def salir(response: Response):
     response.delete_cookie(acceso.COOKIE)
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Usuarios y roles (solo el rol dueño: el middleware ya filtra /api/usuarios)
+# --------------------------------------------------------------------------- #
+class UsuarioNuevo(BaseModel):
+    usuario: str
+    nombre: str = ""
+    rol: str
+    clave: str
+
+
+class UsuarioCambio(BaseModel):
+    nombre: Optional[str] = None
+    rol: Optional[str] = None
+    activo: Optional[bool] = None
+    clave: Optional[str] = None
+
+
+def _validar_rol(rol: Optional[str]) -> None:
+    if rol is not None and rol not in acceso.ROLES:
+        raise HTTPException(400, f"Rol desconocido: {rol}")
+
+
+@app.get("/api/usuarios")
+def listar_usuarios():
+    return {
+        "usuarios": usuarios_store.listar(),
+        "roles": [{"id": k, "nombre": v["nombre"], "ayuda": v["ayuda"],
+                   "modulos": list(v["modulos"])} for k, v in acceso.ROLES.items()],
+    }
+
+
+@app.post("/api/usuarios")
+def crear_usuario(req: UsuarioNuevo):
+    _validar_rol(req.rol)
+    try:
+        return usuarios_store.crear(req.usuario, req.nombre, req.rol, req.clave)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+
+
+@app.patch("/api/usuarios/{usuario}")
+def cambiar_usuario(usuario: str, req: UsuarioCambio, request: Request):
+    _validar_rol(req.rol)
+    yo = request.state.sesion.get("usuario")
+    # Que el dueño no se quite a sí mismo el acceso a esta pantalla por error.
+    if yo and usuarios_store.normalizar_usuario(usuario) == yo and (
+            req.activo is False or (req.rol is not None and req.rol != "dueno")):
+        raise HTTPException(400, "No puedes desactivarte ni quitarte el rol de dueño a ti mismo.")
+    try:
+        return usuarios_store.actualizar(usuario, nombre=req.nombre, rol=req.rol,
+                                         activo=req.activo, clave=req.clave)
+    except KeyError:
+        raise HTTPException(404, f"No existe el usuario '{usuario}'.")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
 
 # --------------------------------------------------------------------------- #
 # Estado / caché
@@ -731,6 +819,251 @@ def eliminar_movimiento(movement_id: str):
     except Exception as e:
         raise HTTPException(502, f"Error eliminando el movimiento en Loggro: {e}")
     return {"ok": True, "movement_id": movement_id, "raw": resp}
+
+
+# --------------------------------------------------------------------------- #
+# Otros movimientos de inventario: ajustes, mermas, devoluciones, conteo físico
+# --------------------------------------------------------------------------- #
+# Las listas que llegan por WhatsApp no tienen proveedor: sus símiles ("pola" ->
+# Aguila Original) se aprenden en su propio grupo del almacén de homologación. El
+# frontend los guarda con el mismo /api/homologacion/assign usando este id.
+LISTAS_KEY = "_listas"
+
+
+class ListaTextoRequest(BaseModel):
+    texto: str
+
+
+class LineaInventario(BaseModel):
+    descripcion: str = ""
+    product_id: str
+    cantidad: float  # en modo conteo: lo contado; en los demás: cuánto entra/sale
+    costo_unitario: Optional[float] = None  # None = el que pondría Loggro
+
+
+class CrearInventarioRequest(BaseModel):
+    tipo: str  # id del tipo de Loggro ("3", "6", ...) o "conteo"
+    fecha: Optional[str] = None
+    nota: str = ""
+    items: list[LineaInventario]
+
+
+def _productos_frescos() -> dict[str, dict]:
+    """Productos completos de Loggro por _id, SIN caché: el stock cambia con cada venta."""
+    return {p["_id"]: p for p in cliente().get_products() if p.get("_id")}
+
+
+def _resolver_lista(lista: dict, productos: dict[str, dict]) -> dict:
+    """Pone product_id a cada línea extraída: lo aprendido > lo que propuso la IA > parecido."""
+    import difflib
+
+    aprendidos = store.cargar()["providers"].get(LISTAS_KEY, {}).get("items", {})
+    por_nombre = {_sin_acentos(p.get("name") or ""): p for p in productos.values()}
+    nombres = list(por_nombre)
+
+    items = []
+    for it in lista.get("items") or []:
+        desc = (it.get("descripcion") or "").strip()
+        prod, origen = None, None
+        entry = aprendidos.get(store.normalizar(desc))
+        if entry and entry.get("product_id") in productos:
+            prod, origen = productos[entry["product_id"]], "aprendido"
+        if prod is None and it.get("producto_catalogo"):
+            prod = por_nombre.get(_sin_acentos(it["producto_catalogo"]))
+            origen = "ia" if prod else None
+        if prod is None and desc:
+            cerca = difflib.get_close_matches(_sin_acentos(desc), nombres, n=1, cutoff=0.75)
+            if cerca:
+                prod, origen = por_nombre[cerca[0]], "parecido"
+        stock = mov_inv.stock_en_bodega(prod, LOCATION_STOCK_ID) if prod else None
+        items.append({
+            "descripcion": desc,
+            "cantidad": it.get("cantidad") or 0,
+            "costo_unitario": it.get("costo_unitario") or 0,
+            "product_id": prod["_id"] if prod else None,
+            "product_name": prod.get("name") if prod else None,
+            "origen": origen,
+            "stock_actual": stock["stock"] if stock else None,
+        })
+    return {
+        "fecha": _fecha_iso(lista.get("fecha")) if lista.get("fecha") else None,
+        "nota": lista.get("nota") or "",
+        "items": items,
+    }
+
+
+@app.get("/api/inventario/tipos")
+def inventario_tipos():
+    """Tipos de movimiento que ofrece la app (más el modo 'conteo', que no es de Loggro)."""
+    return mov_inv.TIPOS
+
+
+@app.get("/api/inventario/stock")
+def inventario_stock(ids: str = Query(..., description="product _id separados por coma")):
+    """Stock actual en la bodega de cada producto (fresco, sin caché)."""
+    productos = _productos_frescos()
+    salida = {}
+    for pid in [i for i in ids.split(",") if i]:
+        prod = productos.get(pid)
+        if prod:
+            salida[pid] = mov_inv.stock_en_bodega(prod, LOCATION_STOCK_ID)
+    return salida
+
+
+@app.get("/api/inventario/existencias")
+def inventario_existencias(dias: int = Query(15, ge=1, le=90),
+                           cobertura: int = Query(7, ge=1, le=60)):
+    """Por ítem: stock inicial del periodo, compras, consumo, actual y cuánto pedir.
+
+    El cálculo vive en `informe_stock.py`, el mismo que usa la consola y el CSV.
+    """
+    try:
+        crudos = informe_stock.traer(cliente(), dias)
+    except Exception as e:
+        raise HTTPException(502, f"Error consultando el inventario en Loggro: {e}")
+    return informe_stock.calcular(crudos, dias, cobertura, LOCATION_STOCK_ID)
+
+
+@app.post("/api/inventario/lista/texto")
+def inventario_lista_texto(req: ListaTextoRequest):
+    """Texto de WhatsApp -> líneas con producto sugerido y stock actual."""
+    if not req.texto.strip():
+        raise HTTPException(400, "La lista está vacía.")
+    if not os.getenv("GEMINI_API_KEY"):
+        raise HTTPException(400, "Falta GEMINI_API_KEY en el .env para leer la lista con IA.")
+    productos = _productos_frescos()
+    catalogo = [p.get("name") or "" for p in productos.values()]
+    try:
+        lista = loggro_intake.extraer_lista_texto(req.texto, catalogo)
+    except Exception as e:
+        raise HTTPException(502, f"Error leyendo la lista: {e}")
+    return _resolver_lista(lista, productos)
+
+
+@app.post("/api/inventario/lista/imagen")
+async def inventario_lista_imagen(file: UploadFile = File(...)):
+    """Foto de una lista (a mano, planilla, pantallazo) -> mismas líneas que el texto."""
+    if not os.getenv("GEMINI_API_KEY"):
+        raise HTTPException(400, "Falta GEMINI_API_KEY en el .env para leer la lista con IA.")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Archivo vacío.")
+    productos = _productos_frescos()
+    catalogo = [p.get("name") or "" for p in productos.values()]
+    media = loggro_intake.media_type_from_name(file.filename or "lista.jpg")
+    try:
+        lista = loggro_intake.extraer_lista_imagen(data, media, catalogo)
+    except Exception as e:
+        raise HTTPException(502, f"Error leyendo la foto: {e}")
+    return _resolver_lista(lista, productos)
+
+
+def _agrupar(items: list[LineaInventario]) -> list[LineaInventario]:
+    """Suma las líneas del mismo producto ("aguila barra 20" + "aguila bodega 30").
+
+    Loggro no admite el mismo producto dos veces en un movimiento. El costo que se
+    conserva es el primero que venga explícito.
+    """
+    por_id: dict[str, LineaInventario] = {}
+    for it in items:
+        if it.product_id in por_id:
+            prev = por_id[it.product_id]
+            prev.cantidad += it.cantidad
+            if prev.costo_unitario is None:
+                prev.costo_unitario = it.costo_unitario
+        else:
+            por_id[it.product_id] = it.model_copy()
+    return list(por_id.values())
+
+
+def _crear_en_loggro(tipo_id: int, lineas: list[dict], fecha: str, nota: str) -> dict:
+    payload = mov_inv.construir_payload(tipo_id, lineas, LOCATION_STOCK_ID, fecha, nota)
+    try:
+        resp = cliente().create_movement(payload)
+    except Exception as e:
+        import json as _json
+        print("[inventario] FALLO. Payload enviado:")
+        print(_json.dumps(payload, ensure_ascii=False, indent=2))
+        raise HTTPException(502, f"Error creando el movimiento en Loggro: {e}")
+    return {
+        "movement_id": resp.get("_id") if isinstance(resp, dict) else None,
+        "tipo": tipo_id,
+        "tipo_nombre": mov_inv.TIPOS_POR_ID[tipo_id]["nombre"],
+        "items": len(lineas),
+        "total": resp.get("total") if isinstance(resp, dict) else None,
+    }
+
+
+@app.post("/api/inventario/movimiento")
+def crear_movimiento_inventario(req: CrearInventarioRequest):
+    """Crea el movimiento en Loggro (POST /inventories).
+
+    tipo = id de Loggro: las cantidades entran o salen tal cual.
+    tipo = "conteo": `cantidad` es lo CONTADO; se compara con el stock fresco y se
+    generan hasta dos movimientos (Entrada-Ajuste por lo que sobra, Salida-Ajuste por
+    lo que falta). Los productos que no vienen en la lista no se tocan.
+    """
+    if not req.items:
+        raise HTTPException(400, "No hay productos para registrar.")
+    if any(not it.product_id for it in req.items):
+        raise HTTPException(400, "Hay productos sin homologar.")
+    fecha = _fecha_iso(req.fecha)
+    productos = _productos_frescos()
+    items = _agrupar(req.items)
+    resultado = _registrar_inventario(req, items, productos, fecha)
+    _aprender_lista(req.items, productos)
+    return resultado
+
+
+def _aprender_lista(items: list[LineaInventario], productos: dict[str, dict]) -> None:
+    """Recuerda descripcion -> producto de lo que se acaba de registrar (ya revisado por
+    una persona), para que la próxima lista lo reconozca sin la IA. No falla el registro."""
+    try:
+        data = store.cargar()
+        for it in items:
+            if it.descripcion.strip() and it.product_id in productos:
+                store.asignar(LISTAS_KEY, "Listas de inventario (WhatsApp)", it.descripcion,
+                              it.product_id, productos[it.product_id].get("name"),
+                              data=data, persistir=False)
+        store.guardar(data)
+    except Exception as e:
+        print("[inventario] No se pudo guardar lo aprendido de la lista:", e)
+
+
+def _registrar_inventario(req: CrearInventarioRequest, items: list[LineaInventario],
+                          productos: dict[str, dict], fecha: str) -> dict:
+
+    try:
+        if req.tipo == "conteo":
+            filas = mov_inv.diferencias_conteo(
+                [{"product_id": it.product_id, "contado": it.cantidad} for it in items],
+                productos, LOCATION_STOCK_ID)
+            entradas, salidas = mov_inv.lineas_ajuste(filas)
+            nota = req.nota.strip() or "Conteo físico"
+            creados = []
+            if entradas:
+                creados.append(_crear_en_loggro(mov_inv.TIPO_AJUSTE_ENTRADA, entradas, fecha, nota))
+            if salidas:
+                creados.append(_crear_en_loggro(mov_inv.TIPO_AJUSTE_SALIDA, salidas, fecha, nota))
+            return {"ok": True, "movimientos": creados, "diferencias": filas,
+                    "sin_cambio": sum(1 for f in filas if f["diferencia"] == 0)}
+
+        tipo_id = int(req.tipo)
+        if tipo_id not in mov_inv.TIPOS_POR_ID:
+            raise HTTPException(400, f"Tipo de movimiento no soportado: {req.tipo}")
+        lineas = []
+        for it in items:
+            prod = productos.get(it.product_id)
+            if prod is None:
+                raise HTTPException(400, f"Producto no encontrado en Loggro: {it.descripcion or it.product_id}")
+            costo = it.costo_unitario
+            if costo is None or (costo == 0 and mov_inv.TIPOS_POR_ID[tipo_id]["costo"] != "usuario"):
+                costo = mov_inv.costo_por_defecto(tipo_id, prod, LOCATION_STOCK_ID)
+            lineas.append({"product_id": it.product_id, "cantidad": it.cantidad,
+                           "costo_unitario": costo})
+        return {"ok": True, "movimientos": [_crear_en_loggro(tipo_id, lineas, fecha, req.nota)]}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # --------------------------------------------------------------------------- #

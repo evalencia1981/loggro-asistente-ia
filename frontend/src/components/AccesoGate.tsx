@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, EVENTO_SIN_ACCESO, type EstadoAcceso, type ModoAcceso } from "../api";
+import { api, EVENTO_SIN_ACCESO, type EstadoAcceso, type Sesion } from "../api";
 
 /**
  * Puerta de entrada a la app.
@@ -12,10 +12,11 @@ import { api, EVENTO_SIN_ACCESO, type EstadoAcceso, type ModoAcceso } from "../a
 export default function AccesoGate({
   children,
 }: {
-  children: (modo: ModoAcceso, salir: () => void) => React.ReactNode;
+  children: (sesion: Sesion, salir: () => void) => React.ReactNode;
 }) {
   const [estado, setEstado] = useState<EstadoAcceso | null>(null);
-  const [codigo, setCodigo] = useState("");
+  const [usuario, setUsuario] = useState("");
+  const [clave, setClave] = useState("");
   const [entrando, setEntrando] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,26 +25,26 @@ export default function AccesoGate({
       .acceso()
       .then(setEstado)
       .catch(() =>
-        setEstado({ dentro: false, modo: null, configurado: true, demo_disponible: false })
+        setEstado({ dentro: false, modo: null, sesion: null, configurado: true, demo_disponible: false })
       );
 
   useEffect(() => {
     consultar();
     // Si la cookie vence a mitad de sesión, cualquier llamada devuelve 401 y
     // volvemos aquí en vez de dejar la pantalla llena de errores.
-    const volver = () => setEstado((e) => (e ? { ...e, dentro: false, modo: null } : e));
+    const volver = () => setEstado((e) => (e ? { ...e, dentro: false, modo: null, sesion: null } : e));
     window.addEventListener(EVENTO_SIN_ACCESO, volver);
     return () => window.removeEventListener(EVENTO_SIN_ACCESO, volver);
   }, []);
 
-  const entrar = async (valor: string) => {
+  const entrar = async () => {
     setError(null);
-    if (!valor.trim()) return setError("Escribe el código.");
+    if (!clave.trim()) return setError(usuario.trim() ? "Escribe la contraseña." : "Escribe el código.");
     setEntrando(true);
     try {
-      const r = await api.entrar(valor.trim());
-      setEstado((e) => ({ ...(e as EstadoAcceso), dentro: true, modo: r.modo }));
-      setCodigo("");
+      const r = await api.entrar(usuario.trim(), clave.trim());
+      setEstado((e) => ({ ...(e as EstadoAcceso), dentro: true, modo: r.sesion.modo, sesion: r.sesion }));
+      setClave("");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -56,7 +57,7 @@ export default function AccesoGate({
     setEntrando(true);
     try {
       const r = await api.entrarDemo();
-      setEstado((e) => ({ ...(e as EstadoAcceso), dentro: true, modo: r.modo }));
+      setEstado((e) => ({ ...(e as EstadoAcceso), dentro: true, modo: r.sesion.modo, sesion: r.sesion }));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -66,18 +67,18 @@ export default function AccesoGate({
 
   const salir = async () => {
     await api.salir().catch(() => {});
-    setEstado((e) => (e ? { ...e, dentro: false, modo: null } : e));
+    setEstado((e) => (e ? { ...e, dentro: false, modo: null, sesion: null } : e));
   };
 
   if (!estado) {
     return <div className="grid min-h-screen place-items-center text-sm text-sand-500">…</div>;
   }
 
-  if (estado.dentro && estado.modo) {
+  if (estado.dentro && estado.sesion) {
     return (
       <>
-        {estado.modo === "demo" && <CintaDemo />}
-        {children(estado.modo, salir)}
+        {estado.sesion.modo === "demo" && <CintaDemo />}
+        {children(estado.sesion, salir)}
       </>
     );
   }
@@ -103,24 +104,40 @@ export default function AccesoGate({
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                entrar(codigo);
+                entrar();
               }}
               className="mt-8"
             >
               <label className="block">
                 <span className="font-mono text-[11px] uppercase tracking-wider text-sand-500">
-                  Código de acceso
+                  Usuario
                 </span>
                 <input
-                  value={codigo}
-                  onChange={(e) => setCodigo(e.target.value)}
-                  type="password"
-                  autoComplete="current-password"
+                  value={usuario}
+                  onChange={(e) => setUsuario(e.target.value)}
+                  autoComplete="username"
+                  autoCapitalize="none"
                   autoFocus
-                  placeholder="••••-•••••-•••••"
-                  className="mt-1.5 w-full rounded-xl border border-espresso-600 bg-espresso-950/70 px-3 py-3 text-center font-mono text-sm tracking-wider text-sand-50 outline-none transition placeholder:text-sand-500/50 focus:border-amber focus:shadow-glow"
+                  placeholder="tu usuario"
+                  className="mt-1.5 w-full rounded-xl border border-espresso-600 bg-espresso-950/70 px-3 py-3 text-sm text-sand-50 outline-none transition placeholder:text-sand-500/50 focus:border-amber focus:shadow-glow"
                 />
               </label>
+              <label className="mt-3 block">
+                <span className="font-mono text-[11px] uppercase tracking-wider text-sand-500">
+                  {usuario.trim() ? "Contraseña" : "Contraseña o código maestro"}
+                </span>
+                <input
+                  value={clave}
+                  onChange={(e) => setClave(e.target.value)}
+                  type="password"
+                  autoComplete="current-password"
+                  placeholder="••••••••"
+                  className="mt-1.5 w-full rounded-xl border border-espresso-600 bg-espresso-950/70 px-3 py-3 font-mono text-sm tracking-wider text-sand-50 outline-none transition placeholder:text-sand-500/50 focus:border-amber focus:shadow-glow"
+                />
+              </label>
+              <p className="mt-2 text-[11px] text-sand-500/70">
+                El dueño puede dejar el usuario vacío y entrar con el código maestro.
+              </p>
 
               {error && (
                 <p className="mt-3 rounded-lg border border-pending/40 bg-pending/10 px-3 py-2 text-xs text-pending">

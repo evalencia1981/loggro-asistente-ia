@@ -7,6 +7,8 @@ import {
   type MovimientoResult,
   type Provider,
   type Product,
+  type Modulo,
+  type Sesion,
   type TirillaItem,
 } from "./api";
 import ProductPicker from "./components/ProductPicker";
@@ -15,6 +17,9 @@ import ChatFactura from "./components/ChatFactura";
 import GastosView from "./components/GastosView";
 import CarteraView from "./components/CarteraView";
 import UtilidadView from "./components/UtilidadView";
+import InventarioView from "./components/InventarioView";
+import StockView from "./components/StockView";
+import UsuariosView from "./components/UsuariosView";
 import AccesoGate from "./components/AccesoGate";
 
 const cop = new Intl.NumberFormat("es-CO", {
@@ -57,10 +62,11 @@ function parseTirilla(text: string): TirillaItem[] {
 export default function App() {
   // La puerta va por fuera de todo: sin sesión no se monta nada de la consola.
   // La protección real está en el backend (acceso.py); esto es la navegación.
-  return <AccesoGate>{(modo, salir) => <Consola modo={modo} onSalir={salir} />}</AccesoGate>;
+  return <AccesoGate>{(sesion, salir) => <Consola sesion={sesion} onSalir={salir} />}</AccesoGate>;
 }
 
-function Consola({ modo, onSalir }: { modo: "dueno" | "demo"; onSalir: () => void }) {
+function Consola({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }) {
+  const modo = sesion.modo;
   const [providers, setProviders] = useState<Provider[]>([]);
   const [providerId, setProviderId] = useState("");
   const [text, setText] = useState("");
@@ -88,7 +94,9 @@ function Consola({ modo, onSalir }: { modo: "dueno" | "demo"; onSalir: () => voi
   const [deleted, setDeleted] = useState(false);
   const [inputMode, setInputMode] = useState<"foto" | "chat">("foto");
   const [factores, setFactores] = useState<Record<string, number>>({});
-  const [vista, setVista] = useState<"compras" | "gastos" | "cartera" | "utilidad">("compras");
+  // Las pestañas salen de los módulos del rol. El backend igual rechaza (403)
+  // lo que el rol no tiene: esto solo evita mostrar botones que no sirven.
+  const [vista, setVista] = useState<Modulo>(sesion.modulos[0] ?? "compras");
 
   useEffect(() => {
     api
@@ -307,13 +315,13 @@ function Consola({ modo, onSalir }: { modo: "dueno" | "demo"; onSalir: () => voi
 
           <button
             onClick={onSalir}
-            title={modo === "demo" ? "Salir del demo" : "Cerrar sesión"}
+            title={modo === "demo" ? "Salir del demo" : `Cerrar sesión de ${sesion.nombre} (${sesion.rol_nombre})`}
             className="inline-flex items-center gap-2 rounded-full border border-espresso-600 bg-espresso-850 px-3.5 py-2 text-xs font-semibold text-sand-400 transition hover:border-pending hover:text-pending"
           >
             <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
             </svg>
-            Salir
+            Salir{sesion.usuario ? ` · ${sesion.nombre}` : ""}
           </button>
           <button
             onClick={sincronizar}
@@ -334,14 +342,14 @@ function Consola({ modo, onSalir }: { modo: "dueno" | "demo"; onSalir: () => voi
 
       <div className="mt-8 hairline h-px w-full" />
 
-      {/* ---------- Navegación Compras / Gastos ---------- */}
+      {/* ---------- Navegación entre módulos ---------- */}
       <div className="mt-6 flex justify-center">
-        <div className="inline-flex rounded-xl border border-espresso-600 bg-espresso-950/50 p-1 text-sm">
-          {(["compras", "gastos", "cartera", "utilidad"] as const).map((v) => (
+        <div className="inline-flex max-w-full overflow-x-auto rounded-xl border border-espresso-600 bg-espresso-950/50 p-1 text-sm">
+          {sesion.modulos.map((v) => (
             <button
               key={v}
               onClick={() => setVista(v)}
-              className={`rounded-lg px-5 py-1.5 font-semibold capitalize transition ${
+              className={`shrink-0 whitespace-nowrap rounded-lg px-4 py-1.5 font-semibold capitalize transition ${
                 vista === v ? "bg-amber text-espresso-950" : "text-sand-400 hover:text-amber"
               }`}
             >
@@ -351,7 +359,19 @@ function Consola({ modo, onSalir }: { modo: "dueno" | "demo"; onSalir: () => voi
         </div>
       </div>
 
-      {vista === "gastos" ? (
+      {vista === "usuarios" ? (
+        <div className="mt-8">
+          <UsuariosView yo={sesion.usuario} />
+        </div>
+      ) : vista === "inventario" ? (
+        <div className="mt-8">
+          <InventarioView />
+        </div>
+      ) : vista === "stock" ? (
+        <div className="mt-8">
+          <StockView />
+        </div>
+      ) : vista === "gastos" ? (
         <div className="mt-8">
           <GastosView />
         </div>

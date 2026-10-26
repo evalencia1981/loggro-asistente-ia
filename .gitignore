@@ -40,3 +40,7 @@ informe_utilidad.html
 
 .vercel
 .env*
+
+# Usuarios locales (hashes de contraseñas) e informe de existencias
+usuarios.json
+informe_stock.csv
