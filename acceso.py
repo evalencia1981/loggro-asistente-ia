@@ -46,7 +46,10 @@ MODO_DEMO = "demo"
 # --------------------------------------------------------------------------- #
 # Roles y módulos
 # --------------------------------------------------------------------------- #
-MODULOS = ("compras", "inventario", "stock", "gastos", "cartera", "utilidad", "usuarios")
+# cartera, utilidad y precios son informes: en la app salen juntos bajo la pestaña
+# "Informes", pero el permiso sigue siendo por informe (la cartera trae cédulas).
+MODULOS = ("compras", "inventario", "stock", "gastos", "cartera", "utilidad", "precios",
+           "usuarios")
 
 ROLES: dict[str, dict] = {
     "dueno": {"nombre": "Dueño", "modulos": MODULOS,
@@ -90,6 +93,7 @@ RUTAS_MODULO: tuple[tuple[str, str], ...] = (
     ("/api/gastos", "gastos"),
     ("/api/creditos", "cartera"),
     ("/api/utilidad", "utilidad"),
+    ("/api/informes/precios", "precios"),
     ("/api/usuarios", "usuarios"),
 )
 
