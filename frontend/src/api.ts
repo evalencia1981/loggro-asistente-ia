@@ -205,6 +205,37 @@ export interface UtilidadResult {
   alertas: AlertaUtilidad[];
 }
 
+// ---- Informes ----
+/** Una fila del informe de precios y costos (ver informe_precios.py). */
+export interface ProductoPrecio {
+  id: string;
+  /** error = costo mal cargado en Loggro; revisar = falta un dato o margen bajo. */
+  estado: "ok" | "revisar" | "error";
+  categoria: string;
+  producto: string;
+  activo: boolean;
+  precio: number;
+  costo: number | null;
+  fuente_costo: string; // promedio | última compra | receta | combo | sin inventario | sin costo
+  utilidad: number | null;
+  margen: number | null;
+  notas: string;
+}
+
+export interface InformePrecios {
+  generado: string;
+  margen_bajo: number;
+  resumen: {
+    productos: number;
+    con_costo: number;
+    sin_costo: number;
+    margen_mediano: number;
+    revisar: number;
+    errores: number;
+  };
+  productos: ProductoPrecio[];
+}
+
 /** `aviso` llega cuando el guardado se quedó local porque el KV no respondió. */
 export interface GuardadoResult {
   ok: boolean;
@@ -350,7 +381,15 @@ export interface ExistenciasResult {
 
 export type ModoAcceso = "dueno" | "demo";
 
-export type Modulo = "compras" | "inventario" | "stock" | "gastos" | "cartera" | "utilidad" | "usuarios";
+export type Modulo =
+  | "compras"
+  | "inventario"
+  | "stock"
+  | "gastos"
+  | "cartera"
+  | "utilidad"
+  | "precios"
+  | "usuarios";
 
 /** Quién está adentro y qué módulos puede ver (lo decide el backend, acceso.py). */
 export interface Sesion {
@@ -641,6 +680,12 @@ export const api = {
     const q = qs.toString();
     return fetch(`/api/utilidad${q ? `?${q}` : ""}`).then((r) => json<UtilidadResult>(r));
   },
+
+  // ---- Informes ----
+  informePrecios: (inactivos = false) =>
+    fetch(`/api/informes/precios${inactivos ? "?inactivos=true" : ""}`).then((r) =>
+      json<InformePrecios>(r)
+    ),
 
   // ---- Inventario (ajustes, mermas, conteo físico) ----
   inventarioTipos: () => fetch("/api/inventario/tipos").then((r) => json<TipoInventario[]>(r)),

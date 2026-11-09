@@ -6,8 +6,9 @@ const MODULO_NOMBRE: Record<string, string> = {
   inventario: "Inventario",
   stock: "Stock",
   gastos: "Gastos",
-  cartera: "Cartera",
-  utilidad: "Utilidad",
+  cartera: "Informe de cartera",
+  utilidad: "Informe de utilidad",
+  precios: "Informe de precios y costos",
   usuarios: "Usuarios",
 };
 

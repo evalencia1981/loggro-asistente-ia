@@ -15,12 +15,23 @@ import ProductPicker from "./components/ProductPicker";
 import TirillaUpload from "./components/TirillaUpload";
 import ChatFactura from "./components/ChatFactura";
 import GastosView from "./components/GastosView";
-import CarteraView from "./components/CarteraView";
-import UtilidadView from "./components/UtilidadView";
+import InformesView, { MODULOS_INFORME } from "./components/InformesView";
 import InventarioView from "./components/InventarioView";
 import StockView from "./components/StockView";
 import UsuariosView from "./components/UsuariosView";
 import AccesoGate from "./components/AccesoGate";
+
+type Pestana = Exclude<Modulo, (typeof MODULOS_INFORME)[number]> | "informes";
+
+/** Módulos del rol -> pestañas, con los informes juntos donde salía el primero. */
+function pestanasDe(modulos: Modulo[]): Pestana[] {
+  const out: Pestana[] = [];
+  for (const m of modulos) {
+    const p: Pestana = (MODULOS_INFORME as readonly Modulo[]).includes(m) ? "informes" : (m as Pestana);
+    if (!out.includes(p)) out.push(p);
+  }
+  return out;
+}
 
 const cop = new Intl.NumberFormat("es-CO", {
   style: "currency",
@@ -96,7 +107,10 @@ function Consola({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }) {
   const [factores, setFactores] = useState<Record<string, number>>({});
   // Las pestañas salen de los módulos del rol. El backend igual rechaza (403)
   // lo que el rol no tiene: esto solo evita mostrar botones que no sirven.
-  const [vista, setVista] = useState<Modulo>(sesion.modulos[0] ?? "compras");
+  // Los módulos de informe (cartera, utilidad, precios) comparten la pestaña
+  // "Informes"; adentro solo se ven los que el rol tiene.
+  const pestanas = useMemo(() => pestanasDe(sesion.modulos), [sesion.modulos]);
+  const [vista, setVista] = useState<Pestana>(pestanas[0] ?? "compras");
 
   useEffect(() => {
     api
@@ -360,7 +374,7 @@ function Consola({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }) {
       {/* ---------- Navegación entre módulos ---------- */}
       <div className="mt-6 flex justify-center">
         <div className="inline-flex max-w-full overflow-x-auto rounded-xl border border-espresso-600 bg-espresso-950/50 p-1 text-sm">
-          {sesion.modulos.map((v) => (
+          {pestanas.map((v) => (
             <button
               key={v}
               onClick={() => setVista(v)}
@@ -395,13 +409,9 @@ function Consola({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }) {
         <div className="mt-8">
           <GastosView />
         </div>
-      ) : vista === "cartera" ? (
+      ) : vista === "informes" ? (
         <div className="mt-8">
-          <CarteraView />
-        </div>
-      ) : vista === "utilidad" ? (
-        <div className="mt-8">
-          <UtilidadView />
+          <InformesView modulos={sesion.modulos} />
         </div>
       ) : (
       <>

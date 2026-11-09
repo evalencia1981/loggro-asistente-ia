@@ -37,6 +37,8 @@ informe_creditos.csv
 informe_creditos.html
 informe_utilidad.csv
 informe_utilidad.html
+informe_precios.csv
+informe_precios.html
 
 .vercel
 .env*

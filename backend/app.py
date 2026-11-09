@@ -34,6 +34,7 @@ import loggro_intake  # noqa: E402  (extractor + chat reutilizables)
 import informe_creditos  # noqa: E402  (agrupación de cartera, compartida con el CSV)
 import recurrentes_store  # noqa: E402  (beneficiarios recurrentes de gastos)
 import informe_utilidad  # noqa: E402  (utilidad: ventas vs compras+gastos)
+import informe_precios  # noqa: E402  (precio, costo y margen por producto)
 import movimientos_inventario as mov_inv  # noqa: E402  (ajustes, mermas, conteo físico)
 import informe_stock  # noqa: E402  (existencias y sugerido de pedido)
 import acceso  # noqa: E402  (puerta de acceso: usuarios, roles, código maestro)
@@ -1537,3 +1538,26 @@ def get_utilidad(desde: Optional[str] = None, hasta: Optional[str] = None,
     except Exception as e:
         raise HTTPException(502, f"Error consultando ventas/compras/gastos en Loggro: {e}")
     return informe_utilidad.agrupar(crudos, ini, fin)
+
+
+# --------------------------------------------------------------------------- #
+# Informes
+# --------------------------------------------------------------------------- #
+@app.get("/api/informes/precios")
+def get_informe_precios(inactivos: bool = False):
+    """Precio, costo, utilidad y margen de cada producto de la carta.
+
+    El cálculo vive en `informe_precios.py` (el mismo de la consola y el CSV).
+    Se consulta en vivo: el costo promedio cambia con cada compra.
+    """
+    try:
+        cli = cliente()
+        filas = informe_precios.calcular(cli.get_products(), cli.get_inventory_items(), inactivos)
+    except Exception as e:
+        raise HTTPException(502, f"Error consultando productos en Loggro: {e}")
+    return {
+        "generado": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "margen_bajo": informe_precios.MARGEN_BAJO,
+        "resumen": informe_precios.resumen(filas),
+        "productos": filas,
+    }
